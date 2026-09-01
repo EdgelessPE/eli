@@ -1,0 +1,3 @@
+[workspace]
+members = ["eli-cli", "eli-lib"]
+resolver = "3"
