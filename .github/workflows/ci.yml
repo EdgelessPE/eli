@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - eli-cli/Cargo.toml
+      - eli-cli/src/**
+      - eli-cli/tests/**
+      - eli-lib/Cargo.toml
+      - eli-lib/src/**
+      - eli-lib/tests/**
+      - .github/workflows/ci.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - eli-cli/Cargo.toml
+      - eli-cli/src/**
+      - eli-cli/tests/**
+      - eli-lib/Cargo.toml
+      - eli-lib/src/**
+      - eli-lib/tests/**
+      - .github/workflows/ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+
+      - name: Run unit tests
+        run: cargo +stable test --workspace
+
+      - name: Run Clippy
+        run: cargo +stable clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Windows boot-disk E2E test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = 'eli-e2e-windows'
+          $usedDrives = [System.IO.DriveInfo]::GetDrives().Name
+          $letter = 90..80 |
+            ForEach-Object { [char]$_ } |
+            Where-Object { $usedDrives -notcontains "${_}:\" } |
+            Select-Object -First 1
+          if ($null -eq $letter) {
+            throw 'No free drive letter is available for the E2E test.'
+          }
+
+          $drive = "${letter}:"
+          $driveRoot = "$drive\"
+          $testRoot = Join-Path $env:RUNNER_TEMP "eli-e2e-$([guid]::NewGuid())"
+          $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
+          $resolvedRunnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+          if (-not $resolvedTestRoot.StartsWith($resolvedRunnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unsafe E2E temporary path: $resolvedTestRoot"
+          }
+
+          New-Item -ItemType Directory -Path $resolvedTestRoot | Out-Null
+          try {
+            subst $drive $resolvedTestRoot
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to create the temporary drive.' }
+            New-Item -ItemType Directory -Path (Join-Path $driveRoot 'Edgeless') | Out-Null
+            Set-Content -NoNewline -Path (Join-Path $driveRoot 'Edgeless\version.txt') -Value $version
+
+            $output = cargo +stable run --quiet --package eli-cli -- bootdisk list
+            $expected = "$driveRoot`t$version"
+            if ($output -notcontains $expected) {
+              throw "Expected '$expected' in output:`n$($output -join "`n")"
+            }
+          }
+          finally {
+            subst $drive /D
+            if (Test-Path -LiteralPath $resolvedTestRoot) {
+              Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
+            }
+          }
+
+      - name: Run Linux boot-disk E2E test
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='eli-e2e-linux'
+          disk_image="$RUNNER_TEMP/eli-e2e.img"
+          mount_point="$RUNNER_TEMP/eli-e2e-mount"
+          mkdir -p "$mount_point"
+          truncate -s 16M "$disk_image"
+          /sbin/mkfs.ext4 -q "$disk_image"
+          cleanup() {
+            sudo umount "$mount_point" 2>/dev/null || true
+            rm -f "$disk_image"
+            rmdir "$mount_point" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          sudo mount -o loop "$disk_image" "$mount_point"
+          sudo chown "$(id -u):$(id -g)" "$mount_point"
+          mkdir "$mount_point/Edgeless"
+          printf '%s' "$version" > "$mount_point/Edgeless/version.txt"
+
+          output="$(cargo +stable run --quiet --package eli-cli -- bootdisk list)"
+          expected="${mount_point}"$'\t'"${version}"
+          grep -Fqx "$expected" <<< "$output"
+
+      - name: Run macOS boot-disk E2E test
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='eli-e2e-macos'
+          disk_image="$RUNNER_TEMP/eli-e2e.dmg"
+          mount_point="$RUNNER_TEMP/eli-e2e-mount"
+          mkdir -p "$mount_point"
+          cleanup() {
+            hdiutil detach -quiet "$mount_point" 2>/dev/null || true
+            rm -f "$disk_image"
+            rmdir "$mount_point" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          hdiutil create -quiet -size 16m -fs HFS+ -volname ELI_E2E "$disk_image"
+          hdiutil attach -quiet -nobrowse -mountpoint "$mount_point" "$disk_image"
+          mkdir "$mount_point/Edgeless"
+          printf '%s' "$version" > "$mount_point/Edgeless/version.txt"
+
+          output="$(cargo +stable run --quiet --package eli-cli -- bootdisk list)"
+          expected="${mount_point}"$'\t'"${version}"
+          grep -Fqx "$expected" <<< "$output"

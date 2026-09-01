@@ -1,5 +1,6 @@
-# Project constraints
+# 项目约束
 
-- `eli` must support Windows, Linux, and macOS. New functionality and dependencies must preserve compatibility with all three platforms unless a requirement explicitly states otherwise.
-- Platform-specific implementations must be isolated with conditional compilation and expose a shared cross-platform interface from `eli-lib`.
-- Boot-disk discovery must enumerate mounted, readable partitions on the current operating system; it must not assume that partitions are represented by Windows drive letters.
+- `eli` 必须支持 Windows、Linux 和 macOS。除非需求明确限定平台，否则新增功能和依赖时必须保持对这三个平台的兼容性。
+- 平台特定实现必须通过条件编译隔离，并由 `eli-lib` 对外提供统一的跨平台接口。
+- 启动盘发现功能必须枚举当前操作系统中已挂载且可读的分区，不得假定分区均使用 Windows 盘符表示。
+- 新增功能或改变现有行为时，必须同步更新对应的单元测试和端到端测试用例。跨平台行为必须在 CI 中分别于 Windows、Linux 和 macOS 上验证。

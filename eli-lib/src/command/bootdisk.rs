@@ -40,19 +40,24 @@ fn mounted_partitions() -> io::Result<Vec<PathBuf>> {
 #[cfg(target_os = "linux")]
 fn mounted_partitions() -> io::Result<Vec<PathBuf>> {
     let mount_info = fs::read_to_string("/proc/self/mountinfo")?;
+    Ok(parse_linux_mount_info(&mount_info))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_mount_info(mount_info: &str) -> Vec<PathBuf> {
     let mount_points = mount_info.lines().filter_map(|line| {
         let encoded_path = line.split_whitespace().nth(4)?;
         Some(PathBuf::from(decode_mount_path(encoded_path)))
     });
 
-    Ok(unique_mount_points(mount_points))
+    unique_mount_points(mount_points)
 }
 
 #[cfg(target_os = "macos")]
 fn mounted_partitions() -> io::Result<Vec<PathBuf>> {
     use std::process::Command;
 
-    let output = Command::new("/sbin/mount").arg("-p").output()?;
+    let output = Command::new("/sbin/mount").output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "failed to enumerate mounted partitions: {}",
@@ -60,16 +65,23 @@ fn mounted_partitions() -> io::Result<Vec<PathBuf>> {
         )));
     }
 
-    let mount_table = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_macos_mount_table(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_mount_table(mount_table: &str) -> Vec<PathBuf> {
     let mount_points = mount_table.lines().filter_map(|line| {
-        let encoded_path = line.split_whitespace().nth(1)?;
+        let (_, mounted_on) = line.split_once(" on ")?;
+        let (encoded_path, _) = mounted_on.rsplit_once(" (")?;
         Some(PathBuf::from(decode_mount_path(encoded_path)))
     });
 
-    Ok(unique_mount_points(mount_points))
+    unique_mount_points(mount_points)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn decode_mount_path(path: &str) -> String {
     path.replace(r"\040", " ")
         .replace(r"\011", "\t")
@@ -77,7 +89,7 @@ fn decode_mount_path(path: &str) -> String {
         .replace(r"\134", r"\")
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn unique_mount_points<I>(mount_points: I) -> Vec<PathBuf>
 where
     I: IntoIterator<Item = PathBuf>,
@@ -149,12 +161,38 @@ mod tests {
         fs::remove_dir_all(test_root).unwrap();
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn decodes_escaped_mount_paths() {
         assert_eq!(
             decode_mount_path(r"/media/Edgeless\040USB"),
             "/media/Edgeless USB"
+        );
+    }
+
+    #[test]
+    fn parses_linux_mount_info_and_removes_duplicates() {
+        let mount_info = concat!(
+            "22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n",
+            "23 1 8:2 / /media/Edgeless\\040USB rw,relatime - vfat /dev/sdb1 rw\n",
+            "24 1 8:2 / /media/Edgeless\\040USB rw,relatime - vfat /dev/sdb1 rw\n",
+        );
+
+        assert_eq!(
+            parse_linux_mount_info(mount_info),
+            vec![PathBuf::from("/"), PathBuf::from("/media/Edgeless USB")]
+        );
+    }
+
+    #[test]
+    fn parses_macos_mount_table() {
+        let mount_table = concat!(
+            "/dev/disk3s1 on /Volumes/Edgeless USB (msdos, local)\n",
+            "/dev/disk1s1 on / (apfs, local, read-only)\n",
+        );
+
+        assert_eq!(
+            parse_macos_mount_table(mount_table),
+            vec![PathBuf::from("/"), PathBuf::from("/Volumes/Edgeless USB")]
         );
     }
 }
