@@ -18,46 +18,70 @@ if (-not $resolvedTestRoot.StartsWith(
     throw "Unsafe E2E temporary path: $resolvedTestRoot"
 }
 
-$version = 'eli-e2e-windows'
 $usedDrives = [System.IO.DriveInfo]::GetDrives().Name
-$letter = 90..80 |
-    ForEach-Object { [char]$_ } |
-    Where-Object { $usedDrives -notcontains "${_}:\" } |
-    Select-Object -First 1
-if ($null -eq $letter) {
-    throw 'No free drive letter is available for the E2E test.'
+$letters = @(90..65 |
+        ForEach-Object { [char]$_ } |
+        Where-Object { $usedDrives -notcontains "${_}:\" } |
+        Select-Object -First 2)
+if ($letters.Count -ne 2) {
+    throw 'Two free drive letters are required for the E2E test.'
 }
 
-$drive = "${letter}:"
-$driveRoot = "$drive\"
-$substCreated = $false
+$drives = @($letters | ForEach-Object { "${_}:" })
+$driveRoots = @($drives | ForEach-Object { "$_\" })
+$substDrives = [System.Collections.Generic.List[string]]::new()
 New-Item -ItemType Directory -Path $resolvedTestRoot | Out-Null
 
 Push-Location $repoRoot
 try {
-    subst $drive $resolvedTestRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to create the temporary drive.'
-    }
-    $substCreated = $true
+    for ($index = 0; $index -lt $drives.Count; $index++) {
+        $backingPath = Join-Path $resolvedTestRoot "disk-$index"
+        New-Item -ItemType Directory -Path $backingPath | Out-Null
+        subst $drives[$index] $backingPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create temporary drive $($drives[$index])."
+        }
+        $substDrives.Add($drives[$index])
 
-    New-Item -ItemType Directory -Path (Join-Path $driveRoot 'Edgeless') | Out-Null
-    Set-Content -NoNewline `
-        -Path (Join-Path $driveRoot 'Edgeless\version.txt') `
-        -Value $version
-
-    $output = cargo +stable run --quiet --package eli-cli -- bootdisk list
-    if ($LASTEXITCODE -ne 0) {
-        throw 'eli bootdisk list failed.'
+        $edgelessPath = Join-Path $driveRoots[$index] 'Edgeless'
+        New-Item -ItemType Directory -Path $edgelessPath | Out-Null
+        Set-Content -NoNewline `
+            -Path (Join-Path $edgelessPath 'version.txt') `
+            -Value "eli-e2e-windows-$($letters[$index])"
     }
-    $expected = "$driveRoot`t$version"
-    if ($output -notcontains $expected) {
-        throw "Expected '$expected' in output:`n$($output -join "`n")"
+
+    cargo +stable build --quiet --package eli-cli
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build eli.' }
+    $eli = Join-Path $repoRoot 'target\debug\eli.exe'
+    $stdoutPath = Join-Path $resolvedTestRoot 'stdout.txt'
+    $stderrPath = Join-Path $resolvedTestRoot 'stderr.txt'
+
+    & $eli bootdisk get 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Automatic boot-disk selection failed.' }
+    $selected = (Get-Content -Raw -LiteralPath $stdoutPath).TrimEnd()
+    $warning = Get-Content -Raw -LiteralPath $stderrPath
+    if ($selected -ne $drives[0]) {
+        throw "Expected automatic selection '$($drives[0])', got '$selected'."
+    }
+    if (-not ($warning.Contains('warning: found ') -and
+            $warning.Contains(' Edgeless boot disks'))) {
+        throw "Expected a multiple-candidate warning, got '$warning'."
+    }
+
+    & $eli bootdisk get -b $driveRoots[1] 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Explicit boot-disk selection failed.' }
+    $selected = (Get-Content -Raw -LiteralPath $stdoutPath).TrimEnd()
+    $warning = Get-Content -Raw -LiteralPath $stderrPath
+    if ($selected -ne $drives[1]) {
+        throw "Expected explicit selection '$($drives[1])', got '$selected'."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($warning)) {
+        throw "Explicit selection unexpectedly emitted a warning: '$warning'."
     }
 }
 finally {
     Pop-Location
-    if ($substCreated) {
+    foreach ($drive in $substDrives) {
         subst $drive /D
     }
     if (Test-Path -LiteralPath $resolvedTestRoot) {
