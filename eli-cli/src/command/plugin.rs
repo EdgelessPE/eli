@@ -4,6 +4,7 @@ use eli_lib::Ctx;
 use eli_lib::command::plugin::PluginAttribute;
 use std::ffi::OsString;
 use std::io;
+use std::path::{Path, PathBuf};
 
 const NAME_COLUMN_WIDTH: usize = 32;
 const VERSION_COLUMN_WIDTH: usize = 16;
@@ -23,6 +24,16 @@ pub(crate) enum PluginCommand {
     },
     /// Delete a plugin package by its file name or file stem.
     Delete {
+        #[arg(value_name = "PLUGIN")]
+        plugin: OsString,
+    },
+    /// Store a plugin package on the boot disk.
+    Store {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+    /// Move a plugin package into the outdated package directory.
+    Outdate {
         #[arg(value_name = "PLUGIN")]
         plugin: OsString,
     },
@@ -53,6 +64,8 @@ pub(crate) fn execute(ctx: &Ctx, command: PluginCommand) -> io::Result<()> {
         PluginCommand::List => list(ctx),
         PluginCommand::Attr { plugin, attribute } => attr(ctx, &plugin, attribute.into()),
         PluginCommand::Delete { plugin } => delete(ctx, &plugin),
+        PluginCommand::Store { path } => store(ctx, &path),
+        PluginCommand::Outdate { plugin } => outdate(ctx, &plugin),
     }
 }
 
@@ -89,5 +102,17 @@ fn attr(ctx: &Ctx, plugin: &std::ffi::OsStr, attribute: PluginAttribute) -> io::
 fn delete(ctx: &Ctx, plugin: &std::ffi::OsStr) -> io::Result<()> {
     let deleted = eli_lib::command::plugin::delete(ctx, plugin)?;
     println!("Deleted {}", deleted.display());
+    Ok(())
+}
+
+fn store(ctx: &Ctx, path: &Path) -> io::Result<()> {
+    let stored = eli_lib::command::plugin::store(ctx, path)?;
+    println!("Stored {}", stored.display());
+    Ok(())
+}
+
+fn outdate(ctx: &Ctx, plugin: &std::ffi::OsStr) -> io::Result<()> {
+    let moved = eli_lib::command::plugin::outdate(ctx, plugin)?;
+    println!("Outdated {}", moved.display());
     Ok(())
 }

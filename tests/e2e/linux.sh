@@ -70,6 +70,25 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+package_path="$test_root/工具箱_1.0.0_Edgeless.7z"
+printf '%s' 'stored-package' > "$package_path"
+if "$eli" plugin store "$package_path" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Plugin storage without an explicit disk unexpectedly succeeded.' >&2
+    exit 1
+fi
+[[ ! -e "$mount_a/Edgeless/Resource/工具箱_1.0.0_Edgeless.7z" ]]
+[[ ! -e "$mount_z/Edgeless/Resource/工具箱_1.0.0_Edgeless.7z" ]]
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" plugin store "$package_path" > "$stdout_path" 2> "$stderr_path"
+cmp "$package_path" "$mount_a/Edgeless/Resource/工具箱_1.0.0_Edgeless.7z"
+[[ ! -s "$stderr_path" ]]
+
+"$eli" plugin outdate '工具箱_1.0.0_Edgeless' --bootdisk "$mount_a" > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Resource/工具箱_1.0.0_Edgeless.7z" ]]
+[[ -f "$mount_a/Edgeless/Resource/过期插件包/工具箱_1.0.0_Edgeless.7zf" ]]
+[[ ! -s "$stderr_path" ]]
+
 "$eli" --bootdisk "$mount_a" plugin list > "$stdout_path" 2> "$stderr_path"
 grep -Eq '^Name +Version +Author +Attribute +AutoBuild$' "$stdout_path"
 grep -Eq '^搜狗拼音 +16\.4\.0\.0 +Cno +Normal +Yes$' "$stdout_path"

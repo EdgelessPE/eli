@@ -106,6 +106,37 @@ try {
         throw "Explicit selection unexpectedly emitted a warning: '$warning'."
     }
 
+    $packagePath = Join-Path $resolvedTestRoot '工具箱_1.0.0_Edgeless.7z'
+    Set-Content -NoNewline -LiteralPath $packagePath -Value 'stored-package'
+    & $eli plugin store $packagePath 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Plugin storage without an explicit disk unexpectedly succeeded.'
+    }
+    if ((Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Resource\工具箱_1.0.0_Edgeless.7z')) -or
+            (Test-Path -LiteralPath (Join-Path $driveRoots[1] 'Edgeless\Resource\工具箱_1.0.0_Edgeless.7z'))) {
+        throw 'Ambiguous plugin storage modified a boot disk.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Ambiguous plugin storage did not suggest --bootdisk.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] plugin store $packagePath 1> $stdoutPath 2> $stderrPath
+    $storedPath = Join-Path $driveRoots[0] 'Edgeless\Resource\工具箱_1.0.0_Edgeless.7z'
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $storedPath)) {
+        throw 'Plugin storage failed.'
+    }
+    if ((Get-Content -Raw -LiteralPath $storedPath) -ne 'stored-package') {
+        throw 'Stored plugin content was changed.'
+    }
+
+    & $eli plugin outdate '工具箱_1.0.0_Edgeless' --bootdisk $driveRoots[0] `
+        1> $stdoutPath 2> $stderrPath
+    $outdatedPath = Join-Path $driveRoots[0] 'Edgeless\Resource\过期插件包\工具箱_1.0.0_Edgeless.7zf'
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $outdatedPath) -or
+            (Test-Path -LiteralPath $storedPath)) {
+        throw 'Marking a plugin package as outdated failed.'
+    }
+
     & $eli --bootdisk $driveRoots[0] plugin list 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Plugin listing failed.' }
     $pluginRows = @(Get-Content -LiteralPath $stdoutPath)

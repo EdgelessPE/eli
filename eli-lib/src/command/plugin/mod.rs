@@ -1,11 +1,15 @@
 mod attr;
 mod delete;
 mod list;
+mod outdate;
 mod package;
+mod store;
 
 pub use attr::set_attribute;
 pub use delete::delete;
 pub use list::list;
+pub use outdate::outdate;
+pub use store::store;
 
 use std::fmt;
 use std::path::Path;

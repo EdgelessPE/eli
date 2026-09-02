@@ -45,6 +45,7 @@ fn main() -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::command::plugin::PluginAttributeArg;
+    use std::path::Path;
 
     #[test]
     fn parses_global_bootdisk_before_the_command() {
@@ -144,6 +145,32 @@ mod tests {
                     ..
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn parses_plugin_store_with_a_package_path() {
+        let cli = Cli::try_parse_from(["eli", "plugin", "store", "/tmp/工具箱_1.0.0_Edgeless.7z"])
+            .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Store { path }
+            } if path == Path::new("/tmp/工具箱_1.0.0_Edgeless.7z")
+        ));
+    }
+
+    #[test]
+    fn parses_plugin_outdate_with_a_stem() {
+        let cli =
+            Cli::try_parse_from(["eli", "plugin", "outdate", "工具箱_1.0.0_Edgeless"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Outdate { plugin }
+            } if plugin == "工具箱_1.0.0_Edgeless"
         ));
     }
 }
