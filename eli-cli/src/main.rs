@@ -6,6 +6,9 @@ use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 
+const BOOTDISK_COLUMN_WIDTH: usize = 40;
+const VERSION_COLUMN_WIDTH: usize = 12;
+
 #[derive(Debug, Parser)]
 #[command(name = "eli", version, about = "Edgeless Command Line Interface")]
 struct Cli {
@@ -62,28 +65,13 @@ fn main() -> std::io::Result<()> {
                 .map(|disk| parse_version_identifier(&disk.version).map(|version| (disk, version)))
                 .collect::<io::Result<Vec<_>>>()?;
 
-            let bootdisk_width = rows
-                .iter()
-                .map(|(disk, _)| disk.mount_point.display().to_string().chars().count())
-                .chain(std::iter::once("Bootdisk".len()))
-                .max()
-                .unwrap_or_default()
-                + 5;
-            let version_width = rows
-                .iter()
-                .map(|(_, identifier)| identifier.version.to_string().len())
-                .chain(std::iter::once("Version".len()))
-                .max()
-                .unwrap_or_default()
-                + 5;
-
             println!(
-                "{:<bootdisk_width$}{:<version_width$}Release",
-                "Bootdisk", "Version"
+                "{:<BOOTDISK_COLUMN_WIDTH$}{:<VERSION_COLUMN_WIDTH$}Release",
+                "Bootdisk", "Version",
             );
             for (disk, identifier) in rows {
                 println!(
-                    "{:<bootdisk_width$}{:<version_width$}{}",
+                    "{:<BOOTDISK_COLUMN_WIDTH$}{:<VERSION_COLUMN_WIDTH$}{}",
                     disk.mount_point.display(),
                     identifier.version.to_string(),
                     format_release(identifier)

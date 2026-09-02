@@ -68,11 +68,8 @@ try {
     & $eli bootdisk list 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Boot-disk listing failed.' }
     $listed = @(Get-Content -LiteralPath $stdoutPath)
-    $longestBootdisk = ($driveRoots + @('Bootdisk') |
-            ForEach-Object { $_.Length } |
-            Measure-Object -Maximum).Maximum
-    $bootdiskWidth = $longestBootdisk + 5
-    $versionWidth = 'Version'.Length + 5
+    $bootdiskWidth = 40
+    $versionWidth = 12
     $rowFormat = "{0,-$bootdiskWidth}{1,-$versionWidth}{2}"
     $expectedHeader = $rowFormat -f 'Bootdisk', 'Version', 'Release'
     $expectedAlpha = $rowFormat -f $driveRoots[0], '4.1.2', 'Alpha'

@@ -52,9 +52,8 @@ stderr_path="$test_root/stderr.txt"
 "$eli" bootdisk list > "$stdout_path" 2> "$stderr_path"
 bootdisk_header='Bootdisk'
 version_header='Version'
-longest_mount=$(( ${#mount_a} > ${#mount_z} ? ${#mount_a} : ${#mount_z} ))
-bootdisk_width=$(( longest_mount > ${#bootdisk_header} ? longest_mount + 5 : ${#bootdisk_header} + 5 ))
-version_width=$(( ${#version_header} + 5 ))
+bootdisk_width=40
+version_width=12
 printf -v expected_header '%-*s%-*s%s' "$bootdisk_width" 'Bootdisk' "$version_width" 'Version' 'Release'
 printf -v expected_alpha '%-*s%-*s%s' "$bootdisk_width" "$mount_a" "$version_width" '4.1.2' 'Alpha'
 printf -v expected_beta '%-*s%-*s%s' "$bootdisk_width" "$mount_z" "$version_width" '4.1.0' 'Beta(Official)'
