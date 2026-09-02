@@ -53,6 +53,7 @@ device_z="$(find_device "$mount_z")"
 [[ "$device_a" == /dev/* && "$device_z" == /dev/* ]]
 
 cd "$repo_root"
+cargo +stable test --quiet --package eli-lib --test version_identifier
 cargo +stable build --quiet --package eli-cli
 eli="$repo_root/target/debug/eli"
 stdout_path="$test_root/stdout.txt"

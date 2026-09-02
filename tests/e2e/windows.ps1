@@ -34,6 +34,9 @@ New-Item -ItemType Directory -Path $resolvedTestRoot | Out-Null
 
 Push-Location $repoRoot
 try {
+    cargo +stable test --quiet --package eli-lib --test version_identifier
+    if ($LASTEXITCODE -ne 0) { throw 'Version identifier E2E test failed.' }
+
     for ($index = 0; $index -lt $drives.Count; $index++) {
         $backingPath = Join-Path $resolvedTestRoot "disk-$index"
         New-Item -ItemType Directory -Path $backingPath | Out-Null
