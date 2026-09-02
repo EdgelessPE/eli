@@ -1,13 +1,10 @@
-use clap::{Parser, Subcommand};
-use eli_lib::Ctx;
-use eli_lib::command::bootdisk::BootDiskSelectionSource;
-use eli_lib::version_identifier::{EdgelessVersionIdentifier, ReleaseChannel, ReleaseStage};
-use std::ffi::OsString;
-use std::io;
-use std::path::PathBuf;
+mod command;
 
-const BOOTDISK_COLUMN_WIDTH: usize = 40;
-const VERSION_COLUMN_WIDTH: usize = 12;
+use clap::{Parser, Subcommand};
+use command::bootdisk::BootdiskCommand;
+use command::plugin::PluginCommand;
+use eli_lib::Ctx;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "eli", version, about = "Edgeless Command Line Interface")]
@@ -34,101 +31,20 @@ enum Command {
     },
 }
 
-#[derive(Debug, Subcommand)]
-enum BootdiskCommand {
-    /// List Edgeless boot disks connected to this computer.
-    List,
-    /// Get the selected Edgeless boot disk partition identifier.
-    Get,
-}
-
-#[derive(Debug, Subcommand)]
-enum PluginCommand {
-    /// Delete a plugin package by its file name or file stem.
-    Delete {
-        #[arg(value_name = "PLUGIN")]
-        plugin: OsString,
-    },
-}
-
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
     let ctx = Ctx::new(cli.bootdisk);
 
     match cli.command {
-        Command::Bootdisk {
-            command: BootdiskCommand::List,
-        } => {
-            let disks = eli_lib::command::bootdisk::list()?;
-            let rows = disks
-                .iter()
-                .map(|disk| parse_version_identifier(&disk.version).map(|version| (disk, version)))
-                .collect::<io::Result<Vec<_>>>()?;
-
-            println!(
-                "{:<BOOTDISK_COLUMN_WIDTH$}{:<VERSION_COLUMN_WIDTH$}Release",
-                "Bootdisk", "Version",
-            );
-            for (disk, identifier) in rows {
-                println!(
-                    "{:<BOOTDISK_COLUMN_WIDTH$}{:<VERSION_COLUMN_WIDTH$}{}",
-                    disk.mount_point.display(),
-                    identifier.version.to_string(),
-                    format_release(identifier)
-                );
-            }
-        }
-        Command::Bootdisk {
-            command: BootdiskCommand::Get,
-        } => {
-            let selection = ctx.bootdisk()?;
-            if selection.source == BootDiskSelectionSource::Automatic
-                && selection.candidates.len() > 1
-            {
-                eprintln!(
-                    "warning: found {} Edgeless boot disks; automatically selected {}; use --bootdisk <PARTITION> to override",
-                    selection.candidates.len(),
-                    selection.selected.partition.display()
-                );
-            }
-            println!("{}", selection.selected.partition.display());
-        }
-        Command::Plugin {
-            command: PluginCommand::Delete { plugin },
-        } => {
-            let deleted = eli_lib::command::plugin::delete(&ctx, &plugin)?;
-            println!("Deleted {}", deleted.display());
-        }
+        Command::Bootdisk { command } => command::bootdisk::execute(&ctx, command),
+        Command::Plugin { command } => command::plugin::execute(&ctx, command),
     }
-
-    Ok(())
-}
-
-fn format_release(identifier: EdgelessVersionIdentifier) -> String {
-    let stage = match identifier.stage {
-        ReleaseStage::Alpha => "Alpha",
-        ReleaseStage::Beta => "Beta",
-    };
-
-    match identifier.channel {
-        Some(ReleaseChannel::Official) => format!("{stage}(Official)"),
-        None => stage.to_owned(),
-    }
-}
-
-fn parse_version_identifier(version: &str) -> io::Result<EdgelessVersionIdentifier> {
-    let version = version.trim_end_matches(['\r', '\n']);
-    EdgelessVersionIdentifier::parse(version).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid Edgeless version identifier {version:?}: {error}"),
-        )
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::plugin::PluginAttributeArg;
 
     #[test]
     fn parses_global_bootdisk_before_the_command() {
@@ -182,26 +98,52 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_normalizes_boot_disk_versions() {
-        let version = parse_version_identifier("Edgeless_Alpa_4.1.2\r\n").unwrap();
+    fn parses_plugin_list() {
+        let cli = Cli::try_parse_from(["eli", "plugin", "list"]).unwrap();
 
-        assert_eq!(version.to_string(), "Edgeless_Alpha_4.1.2");
-        assert_eq!(format_release(version), "Alpha");
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::List
+            }
+        ));
     }
 
     #[test]
-    fn formats_an_official_release() {
-        let version = parse_version_identifier("Edgeless_Beta_Ofial_4.1.0_2").unwrap();
+    fn parses_plugin_attr_with_plugin_before_attribute() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "plugin",
+            "attr",
+            "搜狗拼音_16.4.0.0_Cno（bot）",
+            "LocalBoost",
+        ])
+        .unwrap();
 
-        assert_eq!(version.version.to_string(), "4.1.0");
-        assert_eq!(format_release(version), "Beta(Official)");
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Attr {
+                    plugin,
+                    attribute: PluginAttributeArg::LocalBoost,
+                }
+            } if plugin == "搜狗拼音_16.4.0.0_Cno（bot）"
+        ));
     }
 
     #[test]
-    fn rejects_invalid_boot_disk_versions() {
-        let error = parse_version_identifier("unstructured-version").unwrap_err();
+    fn parses_plugin_attribute_ignoring_ascii_case() {
+        let cli =
+            Cli::try_parse_from(["eli", "plugin", "attr", "plugin_1.0_author", "frozen"]).unwrap();
 
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("unstructured-version"));
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Attr {
+                    attribute: PluginAttributeArg::Frozen,
+                    ..
+                }
+            }
+        ));
     }
 }

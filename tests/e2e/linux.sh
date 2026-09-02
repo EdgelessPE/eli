@@ -70,6 +70,23 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+"$eli" --bootdisk "$mount_a" plugin list > "$stdout_path" 2> "$stderr_path"
+grep -Eq '^Name +Version +Author +Attribute +AutoBuild$' "$stdout_path"
+grep -Eq '^搜狗拼音 +16\.4\.0\.0 +Cno +Normal +Yes$' "$stdout_path"
+[[ ! -s "$stderr_path" ]]
+
+"$eli" --bootdisk "$mount_a" plugin attr '搜狗拼音_16.4.0.0_Cno（bot）' Frozen > "$stdout_path" 2> "$stderr_path"
+[[ -f "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7zf" ]]
+[[ ! -e "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
+[[ ! -s "$stderr_path" ]]
+"$eli" --bootdisk "$mount_a" plugin list > "$stdout_path" 2> "$stderr_path"
+grep -Eq '^搜狗拼音 +16\.4\.0\.0 +Cno +Frozen +Yes$' "$stdout_path"
+
+"$eli" plugin attr '搜狗拼音_16.4.0.0_Cno（bot）.7zf' Normal --bootdisk "$mount_a" > "$stdout_path" 2> "$stderr_path"
+[[ -f "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
+[[ ! -e "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7zf" ]]
+[[ ! -s "$stderr_path" ]]
+
 if "$eli" plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' > "$stdout_path" 2> "$stderr_path"; then
     echo 'Plugin deletion without an explicit disk unexpectedly succeeded.' >&2
     exit 1

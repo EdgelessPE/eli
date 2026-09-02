@@ -5,5 +5,6 @@
 - 启动盘发现功能必须枚举当前操作系统中已挂载且可读的分区，不得假定分区均使用 Windows 盘符表示。
 - 会修改或删除启动盘内容的破坏性命令，在发现多个候选启动盘且用户未显式指定目标时，必须拒绝执行并提示使用全局 `--bootdisk` 参数；只有候选唯一或已显式指定时才能执行。
 - 项目内的代码注释必须使用中文；仅用于 Clap 命令行帮助文本的注释可以使用英文。
+- `eli-lib/src/command` 中的命令必须按父级命令组织为目录模块，例如 `command/plugin/mod.rs` 和 `command/bootdisk/mod.rs`；每个子命令的实现必须继续拆分到同名文件，例如 `plugin/list.rs`、`plugin/attr.rs` 和 `plugin/delete.rs`。CLI 作为薄转发层，按父级命令使用 `command/plugin.rs`、`command/bootdisk.rs` 等单文件模块即可；顶层入口只负责全局参数、上下文初始化和命令路由。
 - 新增功能或改变现有行为时，必须同步更新对应的单元测试和端到端测试用例。跨平台行为必须在 CI 中分别于 Windows、Linux 和 macOS 上验证。
 - 端到端测试脚本统一放在 `tests/e2e/` 中，CI 工作流只负责编排和调用，不得内嵌具体测试实现。

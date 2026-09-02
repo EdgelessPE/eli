@@ -106,6 +106,44 @@ try {
         throw "Explicit selection unexpectedly emitted a warning: '$warning'."
     }
 
+    & $eli --bootdisk $driveRoots[0] plugin list 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Plugin listing failed.' }
+    $pluginRows = @(Get-Content -LiteralPath $stdoutPath)
+    if ($pluginRows.Count -ne 2 -or
+            $pluginRows[0] -notmatch '^Name\s+Version\s+Author\s+Attribute\s+AutoBuild$' -or
+            $pluginRows[1] -notmatch '^搜狗拼音\s+16\.4\.0\.0\s+Cno\s+Normal\s+Yes$') {
+        throw "Unexpected plugin list: '$($pluginRows -join '; ')'."
+    }
+    if (-not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Plugin listing unexpectedly emitted a warning.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] plugin attr '搜狗拼音_16.4.0.0_Cno（bot）' Frozen `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7zf'))) {
+        throw 'Changing plugin attribute to Frozen failed.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Changing plugin attribute to Frozen unexpectedly emitted a warning.'
+    }
+    & $eli --bootdisk $driveRoots[0] plugin list 1> $stdoutPath 2> $stderrPath
+    $frozenRows = @(Get-Content -LiteralPath $stdoutPath)
+    if ($LASTEXITCODE -ne 0 -or
+            $frozenRows[1] -notmatch '^搜狗拼音\s+16\.4\.0\.0\s+Cno\s+Frozen\s+Yes$') {
+        throw "Plugin list did not report the Frozen attribute: '$($frozenRows -join '; ')'."
+    }
+
+    & $eli plugin attr '搜狗拼音_16.4.0.0_Cno（bot）.7zf' Normal --bootdisk $driveRoots[0] `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z'))) {
+        throw 'Changing plugin attribute back to Normal failed.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Changing plugin attribute back to Normal unexpectedly emitted a warning.'
+    }
+
     & $eli plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'Plugin deletion without an explicit disk unexpectedly succeeded.'
