@@ -33,8 +33,8 @@ create_boot_disk() {
     printf '%s' "$version" > "$mount_point/Edgeless/version.txt"
 }
 
-create_boot_disk "$image_a" "$mount_a" 'eli-e2e-macos-a' 'ELI_E2E_A'
-create_boot_disk "$image_z" "$mount_z" 'eli-e2e-macos-z' 'ELI_E2E_Z'
+create_boot_disk "$image_a" "$mount_a" 'Edgeless_Alpa_4.1.2' 'ELI_E2E_A'
+create_boot_disk "$image_z" "$mount_z" 'Edgeless_Beta_Ofial_4.1.0_2' 'ELI_E2E_Z'
 
 find_device() {
     local target="$1"
@@ -58,6 +58,20 @@ cargo +stable build --quiet --package eli-cli
 eli="$repo_root/target/debug/eli"
 stdout_path="$test_root/stdout.txt"
 stderr_path="$test_root/stderr.txt"
+
+"$eli" bootdisk list > "$stdout_path" 2> "$stderr_path"
+bootdisk_header='Bootdisk'
+version_header='Version'
+longest_mount=$(( ${#mount_a} > ${#mount_z} ? ${#mount_a} : ${#mount_z} ))
+bootdisk_width=$(( longest_mount > ${#bootdisk_header} ? longest_mount + 5 : ${#bootdisk_header} + 5 ))
+version_width=$(( ${#version_header} + 5 ))
+printf -v expected_header '%-*s%-*s%s' "$bootdisk_width" 'Bootdisk' "$version_width" 'Version' 'Release'
+printf -v expected_alpha '%-*s%-*s%s' "$bootdisk_width" "$mount_a" "$version_width" '4.1.2' 'Alpha'
+printf -v expected_beta '%-*s%-*s%s' "$bootdisk_width" "$mount_z" "$version_width" '4.1.0' 'Beta(Official)'
+grep -Fqx "$expected_header" "$stdout_path"
+grep -Fqx "$expected_alpha" "$stdout_path"
+grep -Fqx "$expected_beta" "$stdout_path"
+[[ ! -s "$stderr_path" ]]
 
 "$eli" bootdisk get > "$stdout_path" 2> "$stderr_path"
 grep -Fqx "$device_z" "$stdout_path"

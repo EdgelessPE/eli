@@ -29,6 +29,7 @@ if ($letters.Count -ne 2) {
 
 $drives = @($letters | ForEach-Object { "${_}:" })
 $driveRoots = @($drives | ForEach-Object { "$_\" })
+$versions = @('Edgeless_Alpa_4.1.2', 'Edgeless_Beta_Ofial_4.1.0_2')
 $substDrives = [System.Collections.Generic.List[string]]::new()
 New-Item -ItemType Directory -Path $resolvedTestRoot | Out-Null
 
@@ -50,7 +51,7 @@ try {
         New-Item -ItemType Directory -Path $edgelessPath | Out-Null
         Set-Content -NoNewline `
             -Path (Join-Path $edgelessPath 'version.txt') `
-            -Value "eli-e2e-windows-$($letters[$index])"
+            -Value $versions[$index]
     }
 
     cargo +stable build --quiet --package eli-cli
@@ -58,6 +59,27 @@ try {
     $eli = Join-Path $repoRoot 'target\debug\eli.exe'
     $stdoutPath = Join-Path $resolvedTestRoot 'stdout.txt'
     $stderrPath = Join-Path $resolvedTestRoot 'stderr.txt'
+
+    & $eli bootdisk list 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Boot-disk listing failed.' }
+    $listed = @(Get-Content -LiteralPath $stdoutPath)
+    $longestBootdisk = ($driveRoots + @('Bootdisk') |
+            ForEach-Object { $_.Length } |
+            Measure-Object -Maximum).Maximum
+    $bootdiskWidth = $longestBootdisk + 5
+    $versionWidth = 'Version'.Length + 5
+    $rowFormat = "{0,-$bootdiskWidth}{1,-$versionWidth}{2}"
+    $expectedHeader = $rowFormat -f 'Bootdisk', 'Version', 'Release'
+    $expectedAlpha = $rowFormat -f $driveRoots[0], '4.1.2', 'Alpha'
+    $expectedBeta = $rowFormat -f $driveRoots[1], '4.1.0', 'Beta(Official)'
+    if ($listed -notcontains $expectedHeader -or
+            $listed -notcontains $expectedAlpha -or
+            $listed -notcontains $expectedBeta) {
+        throw "Expected normalized versions in boot-disk list, got '$($listed -join '; ')'."
+    }
+    if (-not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Boot-disk listing unexpectedly emitted an error.'
+    }
 
     & $eli bootdisk get 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Automatic boot-disk selection failed.' }
