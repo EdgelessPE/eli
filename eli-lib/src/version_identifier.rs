@@ -1,4 +1,4 @@
-//! Parsing for Edgeless version identifiers.
+//! Edgeless 版本标识符解析。
 
 use std::error::Error;
 use std::fmt;
@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 const PREFIX: &str = "Edgeless";
 
-/// The development stage of an Edgeless release.
+/// Edgeless 版本的开发阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseStage {
     Alpha,
@@ -22,10 +22,10 @@ impl fmt::Display for ReleaseStage {
     }
 }
 
-/// The channel through which an Edgeless release is distributed.
+/// Edgeless 版本的分发渠道。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseChannel {
-    /// The official channel, spelled `Ofial` in an Edgeless identifier.
+    /// 官方渠道，在 Edgeless 标识符中拼写为 `Ofial`。
     Official,
 }
 
@@ -37,7 +37,7 @@ impl fmt::Display for ReleaseChannel {
     }
 }
 
-/// A three-component Edgeless version number.
+/// 由三个部分组成的 Edgeless 版本号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EdgelessVersion {
     pub major: u32,
@@ -51,15 +51,15 @@ impl fmt::Display for EdgelessVersion {
     }
 }
 
-/// How an existing installation must be updated to this release.
+/// 将现有安装更新到此版本所需的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UpdateMethod {
-    /// Update only the required component packages.
+    /// 仅更新必要的组件包。
     ComponentsOnly = 1,
-    /// Update the required component packages and the `.wim` file.
+    /// 更新必要的组件包和 `.wim` 文件。
     ComponentsAndWim = 2,
-    /// Recreate the installation media.
+    /// 重新制作安装介质。
     RebuildRequired = 3,
 }
 
@@ -69,10 +69,9 @@ impl fmt::Display for UpdateMethod {
     }
 }
 
-/// A parsed Edgeless version identifier.
+/// 解析后的 Edgeless 版本标识符。
 ///
-/// The current format includes both `channel` and `update_method`, while the
-/// compatible legacy format omits both fields.
+/// 当前格式同时包含 `channel` 和 `update_method`，兼容的旧格式则省略这两个字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgelessVersionIdentifier {
     pub stage: ReleaseStage,
@@ -82,7 +81,7 @@ pub struct EdgelessVersionIdentifier {
 }
 
 impl EdgelessVersionIdentifier {
-    /// Parses an Edgeless version identifier.
+    /// 解析 Edgeless 版本标识符。
     pub fn parse(identifier: &str) -> Result<Self, ParseVersionIdentifierError> {
         identifier.parse()
     }
@@ -135,7 +134,7 @@ impl fmt::Display for EdgelessVersionIdentifier {
     }
 }
 
-/// Why an Edgeless version identifier could not be parsed.
+/// Edgeless 版本标识符无法解析的原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseVersionIdentifierError {
     InvalidFormat,

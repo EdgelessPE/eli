@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
+use eli_lib::Ctx;
 use eli_lib::command::bootdisk::BootDiskSelectionSource;
 use eli_lib::version_identifier::{EdgelessVersionIdentifier, ReleaseChannel, ReleaseStage};
+use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 
@@ -22,6 +24,11 @@ enum Command {
         #[command(subcommand)]
         command: BootdiskCommand,
     },
+    /// Manage plugin packages on an Edgeless boot disk.
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -32,8 +39,18 @@ enum BootdiskCommand {
     Get,
 }
 
+#[derive(Debug, Subcommand)]
+enum PluginCommand {
+    /// Delete a plugin package by its file name or file stem.
+    Delete {
+        #[arg(value_name = "PLUGIN")]
+        plugin: OsString,
+    },
+}
+
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
+    let ctx = Ctx::new(cli.bootdisk);
 
     match cli.command {
         Command::Bootdisk {
@@ -76,7 +93,7 @@ fn main() -> std::io::Result<()> {
         Command::Bootdisk {
             command: BootdiskCommand::Get,
         } => {
-            let selection = eli_lib::command::bootdisk::get(cli.bootdisk.as_deref())?;
+            let selection = ctx.bootdisk()?;
             if selection.source == BootDiskSelectionSource::Automatic
                 && selection.candidates.len() > 1
             {
@@ -87,6 +104,12 @@ fn main() -> std::io::Result<()> {
                 );
             }
             println!("{}", selection.selected.partition.display());
+        }
+        Command::Plugin {
+            command: PluginCommand::Delete { plugin },
+        } => {
+            let deleted = eli_lib::command::plugin::delete(&ctx, &plugin)?;
+            println!("Deleted {}", deleted.display());
         }
     }
 
@@ -139,6 +162,35 @@ mod tests {
             Cli::try_parse_from(["eli", "bootdisk", "get", "-b", "/Volumes/Edgeless"]).unwrap();
 
         assert_eq!(cli.bootdisk, Some(PathBuf::from("/Volumes/Edgeless")));
+    }
+
+    #[test]
+    fn parses_plugin_delete_with_a_complete_file_name() {
+        let cli =
+            Cli::try_parse_from(["eli", "plugin", "delete", "搜狗拼音_16.4.0.0_Cno（bot）.7z"])
+                .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Delete { plugin }
+            } if plugin == "搜狗拼音_16.4.0.0_Cno（bot）.7z"
+        ));
+    }
+
+    #[test]
+    fn parses_plugin_delete_with_a_stem_and_global_bootdisk() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "plugin",
+            "delete",
+            "搜狗拼音_16.4.0.0_Cno（bot）",
+            "--bootdisk",
+            "/media/Edgeless",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.bootdisk, Some(PathBuf::from("/media/Edgeless")));
     }
 
     #[test]

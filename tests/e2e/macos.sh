@@ -31,6 +31,8 @@ create_boot_disk() {
     mounted+=("$mount_point")
     mkdir "$mount_point/Edgeless"
     printf '%s' "$version" > "$mount_point/Edgeless/version.txt"
+    mkdir "$mount_point/Edgeless/Resource"
+    printf '%s' 'package' > "$mount_point/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z"
 }
 
 create_boot_disk "$image_a" "$mount_a" 'Edgeless_Alpa_4.1.2' 'ELI_E2E_A'
@@ -79,4 +81,20 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 
 "$eli" --bootdisk "$device_a/" bootdisk get > "$stdout_path" 2> "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
+[[ ! -s "$stderr_path" ]]
+
+if "$eli" plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Plugin deletion without an explicit disk unexpectedly succeeded.' >&2
+    exit 1
+fi
+[[ -f "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
+[[ -f "$mount_z/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
+[[ ! -s "$stderr_path" ]]
+
+"$eli" plugin delete '搜狗拼音_16.4.0.0_Cno（bot）' --bootdisk "$mount_z" > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_z/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
 [[ ! -s "$stderr_path" ]]

@@ -52,6 +52,11 @@ try {
         Set-Content -NoNewline `
             -Path (Join-Path $edgelessPath 'version.txt') `
             -Value $versions[$index]
+        $resourcePath = Join-Path $edgelessPath 'Resource'
+        New-Item -ItemType Directory -Path $resourcePath | Out-Null
+        Set-Content -NoNewline `
+            -Path (Join-Path $resourcePath '搜狗拼音_16.4.0.0_Cno（bot）.7z') `
+            -Value 'package'
     }
 
     cargo +stable build --quiet --package eli-cli
@@ -102,6 +107,33 @@ try {
     }
     if (-not [string]::IsNullOrWhiteSpace($warning)) {
         throw "Explicit selection unexpectedly emitted a warning: '$warning'."
+    }
+
+    & $eli plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Plugin deletion without an explicit disk unexpectedly succeeded.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[1] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z'))) {
+        throw 'Ambiguous plugin deletion modified a boot disk.'
+    }
+    $errorOutput = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not $errorOutput.Contains('--bootdisk')) {
+        throw "Ambiguous plugin deletion did not suggest --bootdisk: '$errorOutput'."
+    }
+
+    & $eli --bootdisk $driveRoots[0] plugin delete '搜狗拼音_16.4.0.0_Cno（bot）.7z' `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Plugin deletion by complete file name failed.' }
+    if (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z')) {
+        throw 'Plugin deletion by complete file name did not remove the package.'
+    }
+
+    & $eli plugin delete '搜狗拼音_16.4.0.0_Cno（bot）' --bootdisk $driveRoots[1] `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Plugin deletion by stem failed.' }
+    if (Test-Path -LiteralPath (Join-Path $driveRoots[1] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z')) {
+        throw 'Plugin deletion by stem did not remove the package.'
     }
 }
 finally {

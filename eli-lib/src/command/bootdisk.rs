@@ -2,36 +2,36 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// An Edgeless boot disk found on the current computer.
+/// 当前计算机上发现的 Edgeless 启动盘。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootDisk {
-    /// The platform-specific partition identifier, such as `U:` or `/dev/sdb1`.
+    /// 平台特定的分区标识符，例如 `U:` 或 `/dev/sdb1`。
     pub partition: PathBuf,
-    /// The platform-specific mount point of the partition.
+    /// 平台特定的分区挂载点。
     pub mount_point: PathBuf,
-    /// The complete contents of `Edgeless/version.txt`.
+    /// `Edgeless/version.txt` 的完整内容。
     pub version: String,
 }
 
-/// How a boot disk was selected.
+/// 启动盘的选择方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootDiskSelectionSource {
-    /// The caller explicitly supplied a partition identifier or mount point.
+    /// 调用方显式提供了分区标识符或挂载点。
     Explicit,
-    /// The library selected a disk from the discovered candidates.
+    /// 库从发现的候选启动盘中自动选择。
     Automatic,
 }
 
-/// The result of selecting one Edgeless boot disk.
+/// Edgeless 启动盘的选择结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootDiskSelection {
-    /// The selected boot disk.
+    /// 选中的启动盘。
     pub selected: BootDisk,
-    /// All candidates considered by automatic selection.
+    /// 自动选择时考虑的所有候选启动盘。
     ///
-    /// Explicit selection contains only the selected disk.
+    /// 显式选择时只包含选中的启动盘。
     pub candidates: Vec<BootDisk>,
-    /// Whether selection was explicit or automatic.
+    /// 选择方式是显式还是自动。
     pub source: BootDiskSelectionSource,
 }
 
@@ -41,9 +41,9 @@ struct MountedPartition {
     mount_point: PathBuf,
 }
 
-/// Scans all mounted partitions for Edgeless boot disks.
+/// 扫描所有已挂载分区以查找 Edgeless 启动盘。
 ///
-/// This is the library command entry point used by the CLI.
+/// 这是供 CLI 使用的库命令入口。
 pub fn list() -> io::Result<Vec<BootDisk>> {
     let readable_partitions = mounted_partitions()?
         .into_iter()
@@ -51,12 +51,11 @@ pub fn list() -> io::Result<Vec<BootDisk>> {
     list_from_partitions(readable_partitions)
 }
 
-/// Selects one Edgeless boot disk.
+/// 选择一个 Edgeless 启动盘。
 ///
-/// An explicitly supplied partition identifier or mount point always wins and
-/// must resolve to a readable `Edgeless/version.txt`. Automatic selection
-/// chooses the greatest Windows drive letter, or the lexicographically greatest
-/// mount path on Linux and macOS.
+/// 显式提供的分区标识符或挂载点始终优先，并且必须能够解析到可读取的
+/// `Edgeless/version.txt`。自动选择会选取 Windows 中最大的盘符，或 Linux 和
+/// macOS 中按字典序排列最大的挂载路径。
 pub fn get(preferred_partition: Option<&Path>) -> io::Result<BootDiskSelection> {
     if let Some(partition) = preferred_partition {
         return select_explicit_boot_disk(partition);
@@ -107,7 +106,7 @@ fn resolve_preferred_partition(
 fn mounted_partitions() -> io::Result<Vec<MountedPartition>> {
     use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
 
-    // SAFETY: `GetLogicalDrives` takes no arguments and only returns a bitmask.
+    // 安全性：`GetLogicalDrives` 不接收参数，并且只返回一个位掩码。
     let drive_mask = unsafe { GetLogicalDrives() };
     if drive_mask == 0 {
         return Err(io::Error::last_os_error());
