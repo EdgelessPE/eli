@@ -407,7 +407,16 @@ fn configure_load(
                     Err(_) => false,
                 };
                 if all_succeeded {
-                    let _ = window.hide();
+                    update_rows(&window, &state);
+                    let window_weak = window.as_weak();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1200));
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(window) = window_weak.upgrade() {
+                                let _ = window.hide();
+                            }
+                        });
+                    });
                     return;
                 }
                 update_rows(&window, &state);
