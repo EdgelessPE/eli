@@ -58,8 +58,9 @@ mod ui {
                 }
                 HorizontalLayout {
                     x: 24px;
-                    y: parent.height - self.height - 24px;
+                    y: parent.height - 60px;
                     width: parent.width - 48px;
+                    height: 36px;
                     spacing: 8px;
                     alignment: end;
                     Button {
