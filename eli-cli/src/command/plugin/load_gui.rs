@@ -16,6 +16,7 @@ mod ui {
             label: string,
             icon: string,
             icon-color: color,
+            loading: bool,
             detail: string,
         }
 
@@ -29,9 +30,18 @@ mod ui {
             in-out property <[PluginRow]> rows: [];
             in-out property <bool> busy: false;
             in-out property <bool> retry-available: false;
+            in-out property <int> spinner-frame: 0;
             callback load-requested();
             callback localboost-requested();
             callback cancel-requested();
+
+            Timer {
+                interval: 160ms;
+                running: root.busy;
+                triggered => {
+                    root.spinner-frame = Math.mod(root.spinner-frame + 1, 4);
+                }
+            }
 
             Rectangle {
                 width: parent.width;
@@ -76,6 +86,49 @@ mod ui {
                             font-size: 16px;
                             font-weight: 700;
                             color: row.icon-color;
+                            visible: !row.loading;
+                        }
+                        if row.loading: Rectangle {
+                            x: parent.width - 18px;
+                            y: 5px;
+                            width: 16px;
+                            height: 16px;
+                            Rectangle {
+                                x: 6px;
+                                y: 0;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: #111827;
+                                opacity: root.spinner-frame == 0 ? 1 : 0.2;
+                            }
+                            Rectangle {
+                                x: 12px;
+                                y: 6px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: #111827;
+                                opacity: root.spinner-frame == 1 ? 1 : 0.2;
+                            }
+                            Rectangle {
+                                x: 6px;
+                                y: 12px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: #111827;
+                                opacity: root.spinner-frame == 2 ? 1 : 0.2;
+                            }
+                            Rectangle {
+                                x: 0;
+                                y: 6px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: #111827;
+                                opacity: root.spinner-frame == 3 ? 1 : 0.2;
+                            }
                         }
                         hover := TouchArea {
                             x: icon.x;
@@ -233,8 +286,8 @@ impl GuiState {
             .iter()
             .map(|row| {
                 let (icon, icon_color) = match row.state {
-                    RowState::Waiting => ("○", Color::from_rgb_u8(107, 114, 128)),
-                    RowState::Loading => ("◌", Color::from_rgb_u8(17, 24, 39)),
+                    RowState::Waiting => ("", Color::from_rgb_u8(17, 24, 39)),
+                    RowState::Loading => ("", Color::from_rgb_u8(17, 24, 39)),
                     RowState::Succeeded => ("✓", Color::from_rgb_u8(22, 163, 74)),
                     RowState::Failed => ("×", Color::from_rgb_u8(220, 38, 38)),
                 };
@@ -242,6 +295,7 @@ impl GuiState {
                     label: file_label(&row.path).into(),
                     icon: icon.into(),
                     icon_color,
+                    loading: matches!(row.state, RowState::Loading),
                     detail: row.detail.clone().into(),
                 }
             })
