@@ -6,6 +6,10 @@ use std::ffi::OsString;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[cfg(windows)]
+mod load_gui;
 
 const NAME_COLUMN_WIDTH: usize = 32;
 const VERSION_COLUMN_WIDTH: usize = 16;
@@ -42,6 +46,9 @@ pub(crate) enum PluginCommand {
     Load {
         #[arg(required = true, value_name = "PATH")]
         paths: Vec<PathBuf>,
+        /// Open the graphical plugin loader.
+        #[arg(long)]
+        gui: bool,
         #[arg(short = 'r', long)]
         recursive: bool,
         #[arg(short = 'j', long, default_value_t = 2, value_name = "COUNT")]
@@ -102,21 +109,22 @@ impl From<PluginAttributeArg> for PluginAttribute {
     }
 }
 
-pub(crate) fn execute(ctx: &Ctx, command: PluginCommand) -> io::Result<()> {
+pub(crate) fn execute(ctx: Arc<Ctx>, command: PluginCommand) -> io::Result<()> {
     match command {
-        PluginCommand::List => list(ctx),
-        PluginCommand::Attr { plugin, attribute } => attr(ctx, &plugin, attribute.into()),
-        PluginCommand::Delete { plugin } => delete(ctx, &plugin),
-        PluginCommand::Store { path } => store(ctx, &path),
-        PluginCommand::Outdate { plugin } => outdate(ctx, &plugin),
+        PluginCommand::List => list(ctx.as_ref()),
+        PluginCommand::Attr { plugin, attribute } => attr(ctx.as_ref(), &plugin, attribute.into()),
+        PluginCommand::Delete { plugin } => delete(ctx.as_ref(), &plugin),
+        PluginCommand::Store { path } => store(ctx.as_ref(), &path),
+        PluginCommand::Outdate { plugin } => outdate(ctx.as_ref(), &plugin),
         PluginCommand::Load {
             paths,
+            gui,
             recursive,
             jobs,
             localboost,
-        } => load(ctx, &paths, recursive, jobs, localboost),
+        } => load(ctx, paths, gui, recursive, jobs, localboost),
         PluginCommand::Localboost { command } => match command {
-            LocalBoostCommand::Load { path } => localboost_load(ctx, &path),
+            LocalBoostCommand::Load { path } => localboost_load(ctx.as_ref(), &path),
         },
     }
 }
@@ -128,8 +136,9 @@ fn localboost_load(ctx: &Ctx, path: &Path) -> io::Result<()> {
 }
 
 fn load(
-    ctx: &Ctx,
-    paths: &[PathBuf],
+    ctx: Arc<Ctx>,
+    paths: Vec<PathBuf>,
+    gui: bool,
     recursive: bool,
     jobs: usize,
     localboost: LocalBoostArg,
@@ -140,15 +149,21 @@ fn load(
             "plugin load job count must be greater than zero",
         )
     })?;
-    let summary = eli_lib::command::plugin::load(
-        ctx,
-        paths,
-        LoadOptions {
-            recursive,
-            jobs,
-            local_boost: localboost.into(),
-        },
-    )?;
+    let options = LoadOptions {
+        recursive,
+        jobs,
+        local_boost: localboost.into(),
+    };
+    if gui {
+        #[cfg(windows)]
+        return load_gui::run(ctx, paths, options);
+        #[cfg(not(windows))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the plugin load GUI is only available on Windows",
+        ));
+    }
+    let summary = eli_lib::command::plugin::load(ctx.as_ref(), &paths, options)?;
     for result in &summary.results {
         match &result.result {
             Ok(LoadStatus::Loaded) => println!("Loaded {}", result.path.display()),

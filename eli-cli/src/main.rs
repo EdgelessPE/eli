@@ -5,6 +5,7 @@ use command::bootdisk::BootdiskCommand;
 use command::plugin::PluginCommand;
 use eli_lib::Ctx;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "eli", version, about = "Edgeless Command Line Interface")]
@@ -33,11 +34,11 @@ enum Command {
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
-    let ctx = Ctx::new(cli.bootdisk);
+    let ctx = Arc::new(Ctx::new(cli.bootdisk));
 
     match cli.command {
-        Command::Bootdisk { command } => command::bootdisk::execute(&ctx, command),
-        Command::Plugin { command } => command::plugin::execute(&ctx, command),
+        Command::Bootdisk { command } => command::bootdisk::execute(ctx.as_ref(), command),
+        Command::Plugin { command } => command::plugin::execute(ctx, command),
     }
 }
 
@@ -195,6 +196,7 @@ mod tests {
             Command::Plugin {
                 command: PluginCommand::Load {
                     paths,
+                    gui: false,
                     recursive: true,
                     jobs: 4,
                     localboost: command::plugin::LocalBoostArg::Load,
@@ -212,12 +214,42 @@ mod tests {
             Command::Plugin {
                 command: PluginCommand::Load {
                     jobs: 2,
+                    gui: false,
                     recursive: false,
                     localboost: command::plugin::LocalBoostArg::Ignore,
                     ..
                 }
             }
         ));
+    }
+
+    #[test]
+    fn parses_plugin_load_gui_with_paths() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "plugin",
+            "load",
+            "--gui",
+            r"D:\插件包",
+            r"E:\工具_1.0_Edgeless.7z",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Load {
+                    paths,
+                    gui: true,
+                    ..
+                }
+            } if paths.len() == 2
+        ));
+    }
+
+    #[test]
+    fn rejects_plugin_load_gui_without_paths() {
+        assert!(Cli::try_parse_from(["eli", "plugin", "load", "--gui"]).is_err());
     }
 
     #[test]

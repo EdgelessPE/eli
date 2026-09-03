@@ -75,6 +75,17 @@ try {
         throw "Plugin loading did not report its environment dependency: '$loadEnvironmentError'."
     }
 
+    & $eli plugin load --gui (Join-Path $resolvedTestRoot 'plugin.7z') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Plugin loading GUI unexpectedly accepted WindowsNormal.'
+    }
+    $guiEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($guiEnvironmentError.Contains('WindowsPE') -and
+            $guiEnvironmentError.Contains('WindowsNormal'))) {
+        throw "Plugin loading GUI did not report its environment dependency: '$guiEnvironmentError'."
+    }
+
     & $eli plugin localboost load (Join-Path $resolvedTestRoot 'plugin.7zl') `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {

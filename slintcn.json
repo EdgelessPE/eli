@@ -1,0 +1,10 @@
+{
+  "$schema": "https://slintcn.dev/schema/slintcn.json",
+  "style": "default",
+  "baseColor": "zinc",
+  "outDir": "ui/slintcn",
+  "themeDir": "ui/slintcn/theme",
+  "componentsDir": "ui/slintcn/components",
+  "blocksDir": "ui/slintcn/blocks",
+  "registries": {}
+}
