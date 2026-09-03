@@ -2,6 +2,7 @@ use eli_lib::Ctx;
 use eli_lib::command::plugin::{LoadOptions, LoadSummary, LocalBoostHandling};
 use eli_lib::dependency::RuntimeEnvironment;
 use slint::ComponentHandle;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,11 +13,12 @@ mod ui {
         import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
 
         export component PluginLoadWindow inherits Window {
-            title: "加载插件";
+            title: "插件热加载工具";
             width: 420px;
-            height: 160px;
+            height: 190px;
             background: #ffffff;
 
+            in-out property <string> prompt;
             in-out property <string> plugin-label;
             in-out property <string> status: "";
             in-out property <bool> busy: false;
@@ -34,7 +36,15 @@ mod ui {
 
                 Text {
                     x: 24px;
-                    y: 36px;
+                    y: 26px;
+                    width: parent.width - 48px;
+                    text: root.prompt;
+                    font-size: 14px;
+                    color: #374151;
+                }
+                Text {
+                    x: 24px;
+                    y: 54px;
                     width: parent.width - 48px;
                     text: root.plugin-label;
                     font-size: 16px;
@@ -44,7 +54,7 @@ mod ui {
                 }
                 if root.status != "": Text {
                     x: 24px;
-                    y: 64px;
+                    y: 82px;
                     width: parent.width - 48px;
                     text: root.status;
                     font-size: 14px;
@@ -52,7 +62,7 @@ mod ui {
                 }
                 HorizontalLayout {
                     x: 24px;
-                    y: parent.height - 48px;
+                    y: parent.height - 60px;
                     width: parent.width - 48px;
                     height: 36px;
                     spacing: 8px;
@@ -91,11 +101,28 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
         .require_environment(RuntimeEnvironment::WindowsPE)?;
 
     let window = PluginLoadWindow::new().map_err(io::Error::other)?;
+    window.set_prompt(input_prompt(&inputs).into());
     window.set_plugin_label(input_summary(&inputs).into());
     configure_cancel(&window);
     configure_load(&window, Arc::clone(&ctx), inputs.clone(), options, false);
     configure_load(&window, ctx, inputs, options, true);
     window.run().map_err(io::Error::other)
+}
+
+fn input_prompt(inputs: &[PathBuf]) -> &'static str {
+    let directory_count = inputs
+        .iter()
+        .filter(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()))
+        .count();
+    let file_count = inputs.len().saturating_sub(directory_count);
+
+    match (file_count, directory_count) {
+        (1, 0) => "是否将这个文件作为插件包加载？",
+        (_, 0) => "是否将这些文件作为插件包加载？",
+        (0, 1) => "是否加载此目录中的插件包？",
+        (0, _) => "是否加载这些目录中的插件包？",
+        _ => "是否加载这些文件和目录中的插件包？",
+    }
 }
 
 fn configure_cancel(window: &PluginLoadWindow) {
@@ -217,5 +244,21 @@ mod tests {
         ];
 
         assert_eq!(input_summary(&inputs), "工具.7z + 1 项");
+    }
+
+    #[test]
+    fn input_prompt_describes_missing_paths_as_files() {
+        assert_eq!(
+            input_prompt(&[PathBuf::from("plugin.7z")]),
+            "是否将这个文件作为插件包加载？"
+        );
+    }
+
+    #[test]
+    fn input_prompt_describes_mixed_file_and_directory_inputs() {
+        assert_eq!(
+            input_prompt(&[PathBuf::from("plugin.7z"), PathBuf::from(".")]),
+            "是否加载这些文件和目录中的插件包？"
+        );
     }
 }

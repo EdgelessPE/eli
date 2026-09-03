@@ -105,8 +105,8 @@ export component Button inherits Rectangle {
             ? Tokens.color-primary-foreground :
         variant == ButtonVariant.destructive ? Tokens.color-destructive :
         variant == ButtonVariant.link        ? Tokens.color-primary :
-        variant == ButtonVariant.ghost || variant == ButtonVariant.outline
-            ? Tokens.color-muted-foreground :
+        variant == ButtonVariant.ghost ? Tokens.color-muted-foreground :
+        variant == ButtonVariant.outline ? Tokens.color-foreground :
         /* secondary | glass */                Tokens.color-foreground;
     property <color> fg-hover:
         variant == ButtonVariant.default || variant == ButtonVariant.glow
