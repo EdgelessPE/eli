@@ -82,53 +82,12 @@ mod ui {
                             y: 5px;
                             width: 18px;
                             height: 18px;
-                            Rectangle {
-                                x: 7px; y: 0; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 0 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 12px; y: 2px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 1 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 14px; y: 7px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 2 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 12px; y: 12px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 3 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 7px; y: 14px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 4 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 2px; y: 12px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 5 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 0; y: 7px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 6 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
-                            }
-                            Rectangle {
-                                x: 2px; y: 2px; width: 4px; height: 4px; border-radius: 2px;
-                                background: #165dff;
-                                opacity: root.spinner-frame == 7 ? 1 : 0.22;
-                                animate opacity { duration: 100ms; }
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: @image-url("ui/arco-spin.svg");
+                                rotation-angle: root.spinner-frame * 45deg;
+                                animate rotation-angle { duration: 100ms; }
                             }
                         }
                         if row.show-status && !row.loading: Rectangle {
