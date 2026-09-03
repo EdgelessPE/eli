@@ -65,6 +65,27 @@ try {
     $stdoutPath = Join-Path $resolvedTestRoot 'stdout.txt'
     $stderrPath = Join-Path $resolvedTestRoot 'stderr.txt'
 
+    & $eli plugin load (Join-Path $resolvedTestRoot 'plugin.7z') 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Plugin loading unexpectedly accepted WindowsNormal.'
+    }
+    $loadEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($loadEnvironmentError.Contains('WindowsPE') -and
+            $loadEnvironmentError.Contains('WindowsNormal'))) {
+        throw "Plugin loading did not report its environment dependency: '$loadEnvironmentError'."
+    }
+
+    & $eli plugin localboost load (Join-Path $resolvedTestRoot 'plugin.7zl') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'LocalBoost loading unexpectedly accepted WindowsNormal.'
+    }
+    $localBoostEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($localBoostEnvironmentError.Contains('WindowsPE') -and
+            $localBoostEnvironmentError.Contains('WindowsNormal'))) {
+        throw "LocalBoost loading did not report its environment dependency: '$localBoostEnvironmentError'."
+    }
+
     & $eli bootdisk list 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Boot-disk listing failed.' }
     $listed = @(Get-Content -LiteralPath $stdoutPath)

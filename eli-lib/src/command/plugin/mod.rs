@@ -1,6 +1,8 @@
 mod attr;
 mod delete;
 mod list;
+mod load;
+pub mod localboost;
 mod outdate;
 mod package;
 mod store;
@@ -8,6 +10,7 @@ mod store;
 pub use attr::set_attribute;
 pub use delete::delete;
 pub use list::list;
+pub use load::{LoadOptions, LoadResult, LoadStatus, LoadSummary, LocalBoostHandling, load};
 pub use outdate::outdate;
 pub use store::store;
 

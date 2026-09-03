@@ -173,4 +173,65 @@ mod tests {
             } if plugin == "工具箱_1.0.0_Edgeless"
         ));
     }
+
+    #[test]
+    fn parses_plugin_load_with_multiple_inputs_and_options() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "plugin",
+            "load",
+            "--jobs",
+            "4",
+            "--recursive",
+            "--localboost",
+            "load",
+            r"D:\插件包",
+            r"E:\工具_1.0_Edgeless.7z",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Load {
+                    paths,
+                    recursive: true,
+                    jobs: 4,
+                    localboost: command::plugin::LocalBoostArg::Load,
+                }
+            } if paths.len() == 2
+        ));
+    }
+
+    #[test]
+    fn plugin_load_defaults_to_two_jobs_and_ignores_localboost() {
+        let cli = Cli::try_parse_from(["eli", "plugin", "load", "plugin.7z"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Load {
+                    jobs: 2,
+                    recursive: false,
+                    localboost: command::plugin::LocalBoostArg::Ignore,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_localboost_load_as_an_independent_command() {
+        let cli =
+            Cli::try_parse_from(["eli", "plugin", "localboost", "load", r"D:\plugin.7zl"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Localboost {
+                    command: command::plugin::LocalBoostCommand::Load { path },
+                }
+            } if path == Path::new(r"D:\plugin.7zl")
+        ));
+    }
 }

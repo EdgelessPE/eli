@@ -49,6 +49,20 @@ eli="$repo_root/target/debug/eli"
 stdout_path="$test_root/stdout.txt"
 stderr_path="$test_root/stderr.txt"
 
+if "$eli" plugin load "$test_root/plugin.7z" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Plugin loading unexpectedly accepted Linux.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'Linux' "$stderr_path"
+
+if "$eli" plugin localboost load "$test_root/plugin.7zl" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'LocalBoost loading unexpectedly accepted Linux.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'Linux' "$stderr_path"
+
 "$eli" bootdisk list > "$stdout_path" 2> "$stderr_path"
 bootdisk_header='Bootdisk'
 version_header='Version'

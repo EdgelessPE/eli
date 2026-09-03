@@ -1,9 +1,10 @@
 use super::warn_automatic_bootdisk_selection;
 use clap::{Subcommand, ValueEnum};
 use eli_lib::Ctx;
-use eli_lib::command::plugin::PluginAttribute;
+use eli_lib::command::plugin::{LoadOptions, LoadStatus, LocalBoostHandling, PluginAttribute};
 use std::ffi::OsString;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 const NAME_COLUMN_WIDTH: usize = 32;
@@ -37,6 +38,31 @@ pub(crate) enum PluginCommand {
         #[arg(value_name = "PLUGIN")]
         plugin: OsString,
     },
+    /// Load one or more plugin packages into the running Edgeless environment.
+    Load {
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+        #[arg(short = 'r', long)]
+        recursive: bool,
+        #[arg(short = 'j', long, default_value_t = 2, value_name = "COUNT")]
+        jobs: usize,
+        #[arg(long, value_enum, ignore_case = true, default_value_t = LocalBoostArg::Ignore)]
+        localboost: LocalBoostArg,
+    },
+    /// Manage LocalBoost plugin packages.
+    Localboost {
+        #[command(subcommand)]
+        command: LocalBoostCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LocalBoostCommand {
+    /// Install and load a package through the selected LocalBoost repository.
+    Load {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -47,6 +73,23 @@ pub(crate) enum PluginAttributeArg {
     Frozen,
     #[value(name = "LocalBoost")]
     LocalBoost,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum LocalBoostArg {
+    #[value(name = "ignore")]
+    Ignore,
+    #[value(name = "load")]
+    Load,
+}
+
+impl From<LocalBoostArg> for LocalBoostHandling {
+    fn from(value: LocalBoostArg) -> Self {
+        match value {
+            LocalBoostArg::Ignore => Self::Ignore,
+            LocalBoostArg::Load => Self::Load,
+        }
+    }
 }
 
 impl From<PluginAttributeArg> for PluginAttribute {
@@ -66,6 +109,71 @@ pub(crate) fn execute(ctx: &Ctx, command: PluginCommand) -> io::Result<()> {
         PluginCommand::Delete { plugin } => delete(ctx, &plugin),
         PluginCommand::Store { path } => store(ctx, &path),
         PluginCommand::Outdate { plugin } => outdate(ctx, &plugin),
+        PluginCommand::Load {
+            paths,
+            recursive,
+            jobs,
+            localboost,
+        } => load(ctx, &paths, recursive, jobs, localboost),
+        PluginCommand::Localboost { command } => match command {
+            LocalBoostCommand::Load { path } => localboost_load(ctx, &path),
+        },
+    }
+}
+
+fn localboost_load(ctx: &Ctx, path: &Path) -> io::Result<()> {
+    eli_lib::command::plugin::localboost::load::load(ctx, path)?;
+    println!("Loaded with LocalBoost {}", path.display());
+    Ok(())
+}
+
+fn load(
+    ctx: &Ctx,
+    paths: &[PathBuf],
+    recursive: bool,
+    jobs: usize,
+    localboost: LocalBoostArg,
+) -> io::Result<()> {
+    let jobs = NonZeroUsize::new(jobs).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "plugin load job count must be greater than zero",
+        )
+    })?;
+    let summary = eli_lib::command::plugin::load(
+        ctx,
+        paths,
+        LoadOptions {
+            recursive,
+            jobs,
+            local_boost: localboost.into(),
+        },
+    )?;
+    for result in &summary.results {
+        match &result.result {
+            Ok(LoadStatus::Loaded) => println!("Loaded {}", result.path.display()),
+            Ok(LoadStatus::LoadedWithLocalBoost) => {
+                println!("Loaded with LocalBoost {}", result.path.display())
+            }
+            Ok(LoadStatus::SkippedLocalBoost) => {
+                println!("Skipped LocalBoost package {}", result.path.display())
+            }
+            Err(error) => eprintln!("Failed {}: {error}", result.path.display()),
+        }
+    }
+    println!(
+        "{} succeeded, {} failed, {} skipped",
+        summary.succeeded(),
+        summary.failed(),
+        summary.skipped()
+    );
+    if summary.is_success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} plugin package(s) failed to load",
+            summary.failed()
+        )))
     }
 }
 

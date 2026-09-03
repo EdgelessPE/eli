@@ -1,4 +1,5 @@
 use crate::command::bootdisk::{self, BootDisk, BootDiskSelection, BootDiskSelectionSource};
+use crate::dependency::DependencyManager;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -10,6 +11,7 @@ use std::sync::OnceLock;
 pub struct Ctx {
     bootdisk_override: Option<PathBuf>,
     bootdisk: OnceLock<BootDiskSelection>,
+    dependencies: DependencyManager,
 }
 
 impl Ctx {
@@ -17,11 +19,16 @@ impl Ctx {
         Self {
             bootdisk_override,
             bootdisk: OnceLock::new(),
+            dependencies: DependencyManager::new(),
         }
     }
 
     pub fn bootdisk_override(&self) -> Option<&Path> {
         self.bootdisk_override.as_deref()
+    }
+
+    pub fn dependencies(&self) -> &DependencyManager {
+        &self.dependencies
     }
 
     /// 返回本次调用选中的启动盘，且只解析一次。
