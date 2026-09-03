@@ -36,10 +36,10 @@ mod ui {
             callback cancel-requested();
 
             Timer {
-                interval: 160ms;
+                interval: 200ms;
                 running: root.busy;
                 triggered => {
-                    root.spinner-frame = Math.mod(root.spinner-frame + 1, 4);
+                    root.spinner-frame = Math.mod(root.spinner-frame + 1, 10);
                 }
             }
 
@@ -70,7 +70,7 @@ mod ui {
                         Text {
                             x: 0;
                             y: 3px;
-                            width: parent.width - 28px;
+                            width: parent.width - 36px;
                             text: row.label;
                             font-size: 16px;
                             font-weight: 600;
@@ -78,49 +78,59 @@ mod ui {
                             color: #111827;
                         }
                         if row.loading: Rectangle {
-                            x: parent.width - 18px;
-                            y: 5px;
-                            width: 16px;
-                            height: 16px;
+                            x: parent.width - 30px;
+                            y: 9px;
+                            width: 28px;
+                            height: 10px;
                             Rectangle {
-                                x: 6px;
-                                y: 0;
-                                width: 4px;
-                                height: 4px;
-                                border-radius: 2px;
-                                background: row.icon-color;
-                                opacity: root.spinner-frame == 0 ? 1 : 0.25;
-                                animate opacity { duration: 160ms; }
+                                property <int> phase: Math.mod(root.spinner-frame, 10);
+                                x: phase <= 5 ? 12px - phase * 2px : 2px + (phase - 5) * 2px;
+                                y: phase == 0 || phase == 5 ? 2px : 3px;
+                                width: phase == 0 || phase == 5 ? 6px : 4px;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #165dff;
+                                animate x, y, width, height { duration: 200ms; }
                             }
                             Rectangle {
-                                x: 12px;
-                                y: 6px;
-                                width: 4px;
-                                height: 4px;
-                                border-radius: 2px;
-                                background: row.icon-color;
-                                opacity: root.spinner-frame == 1 ? 1 : 0.25;
-                                animate opacity { duration: 160ms; }
+                                property <int> phase: Math.mod(root.spinner-frame + 2, 10);
+                                x: phase <= 5 ? 12px - phase * 2px : 2px + (phase - 5) * 2px;
+                                y: phase == 0 || phase == 5 ? 2px : 3px;
+                                width: phase == 0 || phase == 5 ? 6px : 4px;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #4080ff;
+                                animate x, y, width, height { duration: 200ms; }
                             }
                             Rectangle {
-                                x: 6px;
-                                y: 12px;
-                                width: 4px;
-                                height: 4px;
-                                border-radius: 2px;
-                                background: row.icon-color;
-                                opacity: root.spinner-frame == 2 ? 1 : 0.25;
-                                animate opacity { duration: 160ms; }
+                                property <int> phase: Math.mod(root.spinner-frame + 4, 10);
+                                x: phase <= 5 ? 12px - phase * 2px : 2px + (phase - 5) * 2px;
+                                y: phase == 0 || phase == 5 ? 2px : 3px;
+                                width: phase == 0 || phase == 5 ? 6px : 4px;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #6aa1ff;
+                                animate x, y, width, height { duration: 200ms; }
                             }
                             Rectangle {
-                                x: 0;
-                                y: 6px;
-                                width: 4px;
-                                height: 4px;
-                                border-radius: 2px;
-                                background: row.icon-color;
-                                opacity: root.spinner-frame == 3 ? 1 : 0.25;
-                                animate opacity { duration: 160ms; }
+                                property <int> phase: Math.mod(root.spinner-frame + 6, 10);
+                                x: phase <= 5 ? 12px - phase * 2px : 2px + (phase - 5) * 2px;
+                                y: phase == 0 || phase == 5 ? 2px : 3px;
+                                width: phase == 0 || phase == 5 ? 6px : 4px;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #a9ccff;
+                                animate x, y, width, height { duration: 200ms; }
+                            }
+                            Rectangle {
+                                property <int> phase: Math.mod(root.spinner-frame + 8, 10);
+                                x: phase <= 5 ? 12px - phase * 2px : 2px + (phase - 5) * 2px;
+                                y: phase == 0 || phase == 5 ? 2px : 3px;
+                                width: phase == 0 || phase == 5 ? 6px : 4px;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #d9ebff;
+                                animate x, y, width, height { duration: 200ms; }
                             }
                         }
                         if row.show-status && !row.loading: Rectangle {
