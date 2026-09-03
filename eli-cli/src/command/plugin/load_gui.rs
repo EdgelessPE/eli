@@ -14,9 +14,9 @@ mod ui {
 
         export struct PluginRow {
             label: string,
-            icon: string,
             icon-color: color,
             show-status: bool,
+            loading: bool,
             detail: string,
         }
 
@@ -30,9 +30,18 @@ mod ui {
             in-out property <[PluginRow]> rows: [];
             in-out property <bool> busy: false;
             in-out property <bool> retry-available: false;
+            in-out property <int> spinner-frame: 0;
             callback load-requested();
             callback localboost-requested();
             callback cancel-requested();
+
+            Timer {
+                interval: 160ms;
+                running: root.busy;
+                triggered => {
+                    root.spinner-frame = Math.mod(root.spinner-frame + 1, 4);
+                }
+            }
 
             Rectangle {
                 width: parent.width;
@@ -68,18 +77,53 @@ mod ui {
                             overflow: elide;
                             color: #111827;
                         }
-                        icon := Text {
-                            x: parent.width - 20px;
-                            y: 4px;
-                            width: 20px;
-                            text: row.icon;
-                            horizontal-alignment: center;
-                            font-size: 16px;
-                            font-weight: 700;
-                            color: row.icon-color;
-                            visible: false;
+                        if row.loading: Rectangle {
+                            x: parent.width - 18px;
+                            y: 5px;
+                            width: 16px;
+                            height: 16px;
+                            Rectangle {
+                                x: 6px;
+                                y: 0;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: row.icon-color;
+                                opacity: root.spinner-frame == 0 ? 1 : 0.25;
+                                animate opacity { duration: 160ms; }
+                            }
+                            Rectangle {
+                                x: 12px;
+                                y: 6px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: row.icon-color;
+                                opacity: root.spinner-frame == 1 ? 1 : 0.25;
+                                animate opacity { duration: 160ms; }
+                            }
+                            Rectangle {
+                                x: 6px;
+                                y: 12px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: row.icon-color;
+                                opacity: root.spinner-frame == 2 ? 1 : 0.25;
+                                animate opacity { duration: 160ms; }
+                            }
+                            Rectangle {
+                                x: 0;
+                                y: 6px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: row.icon-color;
+                                opacity: root.spinner-frame == 3 ? 1 : 0.25;
+                                animate opacity { duration: 160ms; }
+                            }
                         }
-                        if row.show-status: Rectangle {
+                        if row.show-status && !row.loading: Rectangle {
                             x: parent.width - 16px;
                             y: 6px;
                             width: 12px;
@@ -88,9 +132,9 @@ mod ui {
                             background: row.icon-color;
                         }
                         hover := TouchArea {
-                            x: icon.x;
+                            x: parent.width - 20px;
                             y: 0;
-                            width: icon.width;
+                            width: 20px;
                             height: parent.height;
                         }
                         if row.detail != "" && hover.has-hover: Rectangle {
@@ -242,17 +286,17 @@ impl GuiState {
         self.rows
             .iter()
             .map(|row| {
-                let (icon_color, show_status) = match row.state {
-                    RowState::Waiting => (Color::from_rgb_u8(17, 24, 39), false),
-                    RowState::Loading => (Color::from_rgb_u8(37, 99, 235), true),
-                    RowState::Succeeded => (Color::from_rgb_u8(22, 163, 74), true),
-                    RowState::Failed => (Color::from_rgb_u8(220, 38, 38), true),
+                let (icon_color, show_status, loading) = match row.state {
+                    RowState::Waiting => (Color::from_rgb_u8(17, 24, 39), false, false),
+                    RowState::Loading => (Color::from_rgb_u8(37, 99, 235), false, true),
+                    RowState::Succeeded => (Color::from_rgb_u8(22, 163, 74), true, false),
+                    RowState::Failed => (Color::from_rgb_u8(220, 38, 38), true, false),
                 };
                 PluginRow {
                     label: file_label(&row.path).into(),
-                    icon: "".into(),
                     icon_color,
                     show_status,
+                    loading,
                     detail: row.detail.clone().into(),
                 }
             })
