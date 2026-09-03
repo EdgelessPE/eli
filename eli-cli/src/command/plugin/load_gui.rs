@@ -17,6 +17,7 @@ mod ui {
             icon: string,
             icon-color: color,
             loading: bool,
+            succeeded: bool,
             detail: string,
         }
 
@@ -129,6 +130,14 @@ mod ui {
                                 background: #111827;
                                 opacity: root.spinner-frame == 3 ? 1 : 0.2;
                             }
+                        }
+                        if row.succeeded: Rectangle {
+                            x: parent.width - 16px;
+                            y: 6px;
+                            width: 12px;
+                            height: 12px;
+                            border-radius: 6px;
+                            background: #16a34a;
                         }
                         hover := TouchArea {
                             x: icon.x;
@@ -285,17 +294,18 @@ impl GuiState {
         self.rows
             .iter()
             .map(|row| {
-                let (icon, icon_color) = match row.state {
-                    RowState::Waiting => ("", Color::from_rgb_u8(17, 24, 39)),
-                    RowState::Loading => ("", Color::from_rgb_u8(17, 24, 39)),
-                    RowState::Succeeded => ("✓", Color::from_rgb_u8(22, 163, 74)),
-                    RowState::Failed => ("×", Color::from_rgb_u8(220, 38, 38)),
+                let (icon, icon_color, succeeded) = match row.state {
+                    RowState::Waiting => ("", Color::from_rgb_u8(17, 24, 39), false),
+                    RowState::Loading => ("", Color::from_rgb_u8(17, 24, 39), false),
+                    RowState::Succeeded => ("", Color::from_rgb_u8(22, 163, 74), true),
+                    RowState::Failed => ("×", Color::from_rgb_u8(220, 38, 38), false),
                 };
                 PluginRow {
                     label: file_label(&row.path).into(),
                     icon: icon.into(),
                     icon_color,
                     loading: matches!(row.state, RowState::Loading),
+                    succeeded,
                     detail: row.detail.clone().into(),
                 }
             })
