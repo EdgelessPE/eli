@@ -12,4 +12,9 @@ clap = { version = "4.5", features = ["derive"] }
 eli-lib = { path = "../eli-lib" }
 
 [target.'cfg(windows)'.dependencies]
-slint = "1.17"
+slint = { version = "1.17", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-software",
+    "compat-1-2",
+] }
