@@ -130,7 +130,7 @@ mod ui {
                             y: parent.height + 2px;
                             width: parent.width;
                             height: 36px;
-                            z: 1;
+                            z: 100;
                             background: #111827;
                             border-radius: 6px;
                             Text {
@@ -409,6 +409,7 @@ fn configure_load(
                     return;
                 }
                 update_rows(&window, &state);
+                window.set_prompt("部分插件包加载失败，请重试".into());
                 window.set_busy(false);
                 window.set_retry_available(true);
             });
