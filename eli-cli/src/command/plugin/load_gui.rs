@@ -14,11 +14,11 @@ mod ui {
         export component PluginLoadWindow inherits Window {
             title: "加载插件";
             width: 420px;
-            height: 200px;
+            height: 160px;
             background: #ffffff;
 
-            in-out property <string> input-count;
-            in-out property <string> status: "请选择此批插件的加载方式。";
+            in-out property <string> plugin-label;
+            in-out property <string> status: "";
             in-out property <bool> busy: false;
             callback load-requested();
             callback localboost-requested();
@@ -34,31 +34,25 @@ mod ui {
 
                 Text {
                     x: 24px;
-                    y: 24px;
-                    text: "加载插件";
+                    y: 36px;
+                    width: parent.width - 48px;
+                    text: root.plugin-label;
                     font-size: 16px;
                     font-weight: 600;
+                    overflow: elide;
                     color: #111827;
                 }
-                Text {
-                    x: parent.width - self.width - 24px;
-                    y: 26px;
-                    text: root.input-count;
-                    font-size: 14px;
-                    color: #6b7280;
-                }
-                Text {
+                if root.status != "": Text {
                     x: 24px;
-                    y: 70px;
+                    y: 64px;
                     width: parent.width - 48px;
                     text: root.status;
                     font-size: 14px;
-                    wrap: word-wrap;
                     color: #374151;
                 }
                 HorizontalLayout {
                     x: 24px;
-                    y: parent.height - 60px;
+                    y: parent.height - 48px;
                     width: parent.width - 48px;
                     height: 36px;
                     spacing: 8px;
@@ -97,7 +91,7 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
         .require_environment(RuntimeEnvironment::WindowsPE)?;
 
     let window = PluginLoadWindow::new().map_err(io::Error::other)?;
-    window.set_input_count(format!("{} 项输入", inputs.len()).into());
+    window.set_plugin_label(input_summary(&inputs).into());
     configure_cancel(&window);
     configure_load(&window, Arc::clone(&ctx), inputs.clone(), options, false);
     configure_load(&window, ctx, inputs, options, true);
@@ -174,6 +168,24 @@ fn format_summary(summary: &LoadSummary) -> String {
     )
 }
 
+fn input_summary(inputs: &[PathBuf]) -> String {
+    let first = inputs
+        .first()
+        .map(|path| {
+            path.file_name()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default();
+    if inputs.len() <= 1 {
+        first
+    } else {
+        format!("{first} + {} 项", inputs.len() - 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +207,15 @@ mod tests {
         };
 
         assert_eq!(format_summary(&summary), "已完成：1 成功，1 失败，0 跳过。");
+    }
+
+    #[test]
+    fn input_summary_shows_the_first_plugin_name_and_remaining_count() {
+        let inputs = vec![
+            PathBuf::from(r"D:\插件\工具.7z"),
+            PathBuf::from(r"D:\插件\办公.7z"),
+        ];
+
+        assert_eq!(input_summary(&inputs), "工具.7z + 1 项");
     }
 }
