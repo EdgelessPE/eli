@@ -82,13 +82,18 @@ mod ui {
                             y: 5px;
                             width: 18px;
                             height: 18px;
-                            Image {
+                            if root.spinner-frame == 0: Image {
                                 width: parent.width;
                                 height: parent.height;
-                                source: @image-url("ui/arco-spin.svg");
-                                rotation-angle: root.spinner-frame * 45deg;
-                                animate rotation-angle { duration: 100ms; }
+                                source: @image-url("ui/arco-spin-0.svg");
                             }
+                            if root.spinner-frame == 1: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-1.svg"); }
+                            if root.spinner-frame == 2: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-2.svg"); }
+                            if root.spinner-frame == 3: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-3.svg"); }
+                            if root.spinner-frame == 4: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-4.svg"); }
+                            if root.spinner-frame == 5: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-5.svg"); }
+                            if root.spinner-frame == 6: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-6.svg"); }
+                            if root.spinner-frame == 7: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-7.svg"); }
                         }
                         if row.show-status && !row.loading: Rectangle {
                             x: parent.width - 16px;
