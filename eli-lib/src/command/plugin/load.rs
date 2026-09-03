@@ -117,15 +117,23 @@ impl RuntimePaths {
             )
         })?;
         let edgeless = PathBuf::from(program_files).join("Edgeless");
+        let system_drive = system_drive_root(&system_drive);
         Ok(Self {
             plugin_release: edgeless.join("plugin_release"),
             installers: edgeless.join("安装程序"),
-            plugin_info: PathBuf::from(system_drive)
-                .join("Users")
-                .join("Plugins_info"),
+            plugin_info: system_drive.join("Users").join("Plugins_info"),
             edgeless,
         })
     }
+}
+
+#[cfg(windows)]
+fn system_drive_root(system_drive: &OsStr) -> PathBuf {
+    let mut root = PathBuf::from(system_drive);
+    if !root.has_root() {
+        root.push("\\");
+    }
+    root
 }
 
 trait PackageLoader: Send + Sync {
@@ -1405,6 +1413,12 @@ mod tests {
             plugin_info: root.join("Users").join("Plugins_info"),
             edgeless,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_a_drive_letter_to_an_absolute_volume_root() {
+        assert_eq!(system_drive_root(OsStr::new("X:")), PathBuf::from("X:\\\\"));
     }
 
     #[test]

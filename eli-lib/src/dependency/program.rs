@@ -43,7 +43,9 @@ fn specification(dependency: ProgramDependency) -> ProgramSpecification {
         },
         ProgramDependency::Pecmd => ProgramSpecification {
             file_name: "pecmd.exe",
-            probe_arguments: &["EXEC", "=cmd.exe /d /c exit 0"],
+            // PECMD 的 EXEC 参数在不同版本中存在不兼容行为；/ ? 是各版本均可
+            // 无副作用执行并以成功状态退出的探测方式。
+            probe_arguments: &["/?"],
             probe_timeout: Duration::from_secs(5),
         },
     }

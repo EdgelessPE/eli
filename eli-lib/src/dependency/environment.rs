@@ -21,6 +21,7 @@ impl fmt::Display for RuntimeEnvironment {
 
 #[cfg(target_os = "windows")]
 pub(super) fn detect() -> io::Result<RuntimeEnvironment> {
+    use std::path::Path;
     use std::ptr;
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW,
@@ -31,7 +32,8 @@ pub(super) fn detect() -> io::Result<RuntimeEnvironment> {
         .chain(Some(0))
         .collect::<Vec<_>>();
     let mut key: HKEY = ptr::null_mut();
-    // 该注册表项由 Windows PE 创建，比判断固定盘符更可靠。
+    // MiniNT 是 Windows PE 的首选标识。部分精简 PE 会移除此项，随后检查
+    // Windows PE 专用的 winpeshl.ini，避免仅依赖 X: 盘符造成误判。
     let status = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.as_ptr(), 0, KEY_READ, &mut key) };
     if status == windows_sys::Win32::Foundation::ERROR_SUCCESS {
         unsafe {
@@ -39,7 +41,16 @@ pub(super) fn detect() -> io::Result<RuntimeEnvironment> {
         }
         Ok(RuntimeEnvironment::WindowsPE)
     } else if status == windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND {
-        Ok(RuntimeEnvironment::WindowsNormal)
+        let system_drive = std::env::var("SystemDrive").unwrap_or_default();
+        let pe_shell = Path::new(&system_drive)
+            .join("Windows")
+            .join("System32")
+            .join("winpeshl.ini");
+        if pe_shell.is_file() {
+            Ok(RuntimeEnvironment::WindowsPE)
+        } else {
+            Ok(RuntimeEnvironment::WindowsNormal)
+        }
     } else {
         Err(io::Error::from_raw_os_error(status as i32))
     }
