@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 mod ui {
     slint::slint! {
         import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
+        import { Tooltip } from "ui/slintcn/components/tooltip.slint";
 
         export struct PluginRow {
             label: string,
@@ -66,8 +67,7 @@ mod ui {
                     height: 116px;
                     spacing: 4px;
                     for row in root.rows: Rectangle {
-                        property <bool> detail-visible: row.detail != "" && hover.has-hover;
-                        height: detail-visible ? 66px : 28px;
+                        height: 28px;
                         Text {
                             x: 0;
                             y: 3px;
@@ -120,30 +120,25 @@ mod ui {
                             border-radius: 6px;
                             background: row.icon-color;
                         }
-                        hover := TouchArea {
-                            x: parent.width - 20px;
-                            y: 0;
-                            width: 20px;
-                            height: 28px;
-                        }
-                        if detail-visible: Rectangle {
-                            x: 0;
-                            y: 30px;
-                            width: parent.width;
-                            height: 36px;
-                            z: 1;
-                            background: #111827;
-                            border-radius: 6px;
-                            Text {
-                                x: 8px;
-                                y: 7px;
-                                width: parent.width - 16px;
-                                text: row.detail;
-                                overflow: elide;
-                                font-size: 12px;
-                                color: #ffffff;
-                            }
-                        }
+                    }
+                }
+                for row[index] in root.rows: Rectangle {
+                    x: 24px;
+                    y: 52px + index * 32px;
+                    width: parent.width - 48px;
+                    height: 28px;
+                    background: transparent;
+                    hover := TouchArea {
+                        x: parent.width - 20px;
+                        width: 20px;
+                        height: parent.height;
+                    }
+                    Tooltip {
+                        x: 0;
+                        y: parent.height + 2px;
+                        width: parent.width;
+                        text: row.detail;
+                        open: row.detail != "" && hover.has-hover;
                     }
                 }
                 HorizontalLayout {

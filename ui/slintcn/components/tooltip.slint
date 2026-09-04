@@ -1,0 +1,19 @@
+export component Tooltip inherits Rectangle {
+    in property <string> text;
+    in property <bool> open: false;
+
+    visible: open;
+    height: 36px;
+    background: #111827;
+    border-radius: 6px;
+
+    Text {
+        x: 8px;
+        y: 7px;
+        width: parent.width - 16px;
+        text: root.text;
+        overflow: elide;
+        font-size: 12px;
+        color: #ffffff;
+    }
+}
