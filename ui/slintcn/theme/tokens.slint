@@ -28,6 +28,11 @@ export global Tokens {
         Theme.mode == ThemeMode.light ? Palette.neutral-100 : Palette.neutral-900;
     out property <color> color-card-foreground:
         Theme.mode == ThemeMode.light ? Palette.neutral-900 : Palette.neutral-50;
+    // 浮层需要比页面表面更明确的层次，不能复用普通卡片表面。
+    out property <color> color-floating-surface:
+        Theme.mode == ThemeMode.light ? Palette.neutral-50 : #1f2937;
+    out property <color> color-floating-border:
+        Theme.mode == ThemeMode.light ? Palette.neutral-300 : #4b5563;
 
     // intent
     out property <color> color-primary:
