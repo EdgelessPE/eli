@@ -154,6 +154,7 @@ fn load(
         jobs,
         local_boost: localboost.into(),
         on_inputs_expanded: None,
+        on_progress: None,
     };
     if gui {
         #[cfg(windows)]

@@ -27,6 +27,18 @@ pub enum LocalBoostHandling {
 }
 
 pub type InputExpansionObserver = Arc<dyn Fn(Vec<PathBuf>) + Send + Sync>;
+pub type LoadProgressObserver = Arc<dyn Fn(LoadProgress) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadProgress {
+    Started {
+        path: PathBuf,
+    },
+    Finished {
+        path: PathBuf,
+        result: Result<LoadStatus, String>,
+    },
+}
 
 #[derive(Clone)]
 pub struct LoadOptions {
@@ -34,6 +46,7 @@ pub struct LoadOptions {
     pub jobs: NonZeroUsize,
     pub local_boost: LocalBoostHandling,
     pub on_inputs_expanded: Option<InputExpansionObserver>,
+    pub on_progress: Option<LoadProgressObserver>,
 }
 
 impl Default for LoadOptions {
@@ -43,6 +56,7 @@ impl Default for LoadOptions {
             jobs: NonZeroUsize::new(2).expect("the default job count is non-zero"),
             local_boost: LocalBoostHandling::Ignore,
             on_inputs_expanded: None,
+            on_progress: None,
         }
     }
 }
@@ -324,6 +338,7 @@ fn load_with(
     let shared_tasks = Arc::new(Mutex::new(tasks));
     let shared_results = Arc::new(Mutex::new(Vec::new()));
     let publish_lock = Arc::new(Mutex::new(()));
+    let progress = options.on_progress.clone();
     let worker_count = options
         .jobs
         .get()
@@ -337,6 +352,7 @@ fn load_with(
             let paths = paths.clone();
             let publish_lock = Arc::clone(&publish_lock);
             let process_lock = Arc::clone(&process_lock);
+            let progress = progress.clone();
             scope.spawn(move || {
                 loop {
                     let task = match tasks.lock() {
@@ -346,6 +362,11 @@ fn load_with(
                     let Some(task) = task else {
                         break;
                     };
+                    if let Some(observer) = &progress {
+                        observer(LoadProgress::Started {
+                            path: task.path.clone(),
+                        });
+                    }
                     let result = if is_local_boost(&task.path) {
                         loader
                             .load_with_local_boost(&task.path)
@@ -360,6 +381,15 @@ fn load_with(
                         )
                         .map(|_| LoadStatus::Loaded)
                     };
+                    if let Some(observer) = &progress {
+                        observer(LoadProgress::Finished {
+                            path: task.path.clone(),
+                            result: result
+                                .as_ref()
+                                .map(|status| *status)
+                                .map_err(ToString::to_string),
+                        });
+                    }
                     if let Ok(mut results) = worker_results.lock() {
                         results.push(IndexedResult {
                             index: task.index,
@@ -1481,6 +1511,54 @@ mod tests {
 
         assert!(summary.is_success());
         assert_eq!(*observed.lock().unwrap(), vec![package]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_each_package_start_and_completion() {
+        let root = test_root();
+        let first = root.join("first.7z");
+        let second = root.join("second.7z");
+        fs::write(&first, "FirstPlugin").unwrap();
+        fs::write(&second, "SecondPlugin").unwrap();
+        let progress = Arc::new(Mutex::new(Vec::new()));
+        let observer = Arc::clone(&progress);
+
+        let summary = load_with(
+            &[first.clone(), second.clone()],
+            LoadOptions {
+                jobs: NonZeroUsize::new(1).unwrap(),
+                on_progress: Some(Arc::new(move |event| {
+                    observer.lock().unwrap().push(event);
+                })),
+                ..LoadOptions::default()
+            },
+            runtime_paths(&root),
+            Arc::new(FakeLoader),
+            Arc::new(ProcessPublishLock::new().unwrap()),
+        )
+        .unwrap();
+
+        assert!(summary.is_success());
+        assert_eq!(
+            *progress.lock().unwrap(),
+            vec![
+                LoadProgress::Started {
+                    path: first.clone()
+                },
+                LoadProgress::Finished {
+                    path: first,
+                    result: Ok(LoadStatus::Loaded)
+                },
+                LoadProgress::Started {
+                    path: second.clone()
+                },
+                LoadProgress::Finished {
+                    path: second,
+                    result: Ok(LoadStatus::Loaded)
+                },
+            ]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

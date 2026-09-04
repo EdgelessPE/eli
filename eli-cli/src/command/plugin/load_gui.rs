@@ -1,5 +1,7 @@
 use eli_lib::Ctx;
-use eli_lib::command::plugin::{LoadOptions, LoadStatus, LoadSummary, LocalBoostHandling};
+use eli_lib::command::plugin::{
+    LoadOptions, LoadProgress, LoadStatus, LoadSummary, LocalBoostHandling,
+};
 use eli_lib::dependency::RuntimeEnvironment;
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::fs;
@@ -71,7 +73,7 @@ mod ui {
                     height: 116px;
                     viewport-height: root.rows.length * 32px;
                     Rectangle {
-                        width: parent.width - 16px;
+                        width: parent.width - 28px;
                         height: root.rows.length * 32px;
                         for row[index] in root.rows: Rectangle {
                             y: index * 32px;
@@ -119,8 +121,8 @@ mod ui {
                     height: 28px;
                     background: transparent;
                     hover := TouchArea {
-                        x: parent.width - 36px;
-                        width: 20px;
+                        x: parent.width - 64px;
+                        width: 64px;
                         height: parent.height;
                         changed has-hover => {
                             if (self.has-hover && row.detail != "") {
@@ -176,7 +178,7 @@ mod ui {
 
 use ui::{PluginLoadWindow, PluginRow};
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowState {
     Waiting,
     Loading,
@@ -217,12 +219,26 @@ impl GuiState {
             .into_iter()
             .map(|path| Row {
                 path,
-                state: RowState::Loading,
+                state: RowState::Waiting,
                 detail: String::new(),
             })
             .collect();
         self.failed_paths.clear();
         self.retry_uses_localboost = localboost;
+    }
+
+    fn apply_progress(&mut self, progress: LoadProgress) {
+        let (path, state, detail) = match progress {
+            LoadProgress::Started { path } => (path, RowState::Loading, String::new()),
+            LoadProgress::Finished { path, result } => match result {
+                Ok(_) => (path, RowState::Succeeded, String::new()),
+                Err(error) => (path, RowState::Failed, error),
+            },
+        };
+        if let Some(row) = self.rows.iter_mut().find(|row| row.path == path) {
+            row.state = state;
+            row.detail = detail;
+        }
     }
 
     fn finish(&mut self, summary: LoadSummary) -> bool {
@@ -388,6 +404,26 @@ fn configure_load(
                     });
                 }
             })),
+            on_progress: Some(Arc::new({
+                let window_weak = window.as_weak();
+                let state = Arc::clone(&state);
+                move |progress| {
+                    let window_weak = window_weak.clone();
+                    let state = Arc::clone(&state);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(window) = window_weak.upgrade() else {
+                            return;
+                        };
+                        let rows = if let Ok(mut state) = state.lock() {
+                            state.apply_progress(progress);
+                            state.rows()
+                        } else {
+                            return;
+                        };
+                        window.set_rows(ModelRc::new(VecModel::from(rows)));
+                    });
+                }
+            })),
             ..options.clone()
         };
         let window_weak = window.as_weak();
@@ -477,6 +513,19 @@ mod tests {
             input_prompt(&[PathBuf::from(".")]),
             "是否加载此目录中的插件包？"
         );
+    }
+
+    #[test]
+    fn progress_only_marks_the_dispatched_package_as_loading() {
+        let first = PathBuf::from("first.7z");
+        let second = PathBuf::from("second.7z");
+        let mut state = GuiState::new(vec![first.clone(), second.clone()]);
+        state.begin(vec![first.clone(), second], false);
+
+        state.apply_progress(LoadProgress::Started { path: first });
+
+        assert_eq!(state.rows[0].state, RowState::Loading);
+        assert_eq!(state.rows[1].state, RowState::Waiting);
     }
 
     #[test]

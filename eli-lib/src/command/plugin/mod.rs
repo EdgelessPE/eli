@@ -11,8 +11,8 @@ pub use attr::set_attribute;
 pub use delete::delete;
 pub use list::list;
 pub use load::{
-    InputExpansionObserver, LoadOptions, LoadResult, LoadStatus, LoadSummary, LocalBoostHandling,
-    load,
+    InputExpansionObserver, LoadOptions, LoadProgress, LoadProgressObserver, LoadResult,
+    LoadStatus, LoadSummary, LocalBoostHandling, load,
 };
 pub use outdate::outdate;
 pub use store::store;
