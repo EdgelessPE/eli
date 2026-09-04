@@ -12,6 +12,7 @@ mod ui {
     slint::slint! {
         import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
         import { Tooltip } from "ui/slintcn/components/tooltip.slint";
+        import { ScrollView } from "std-widgets.slint";
 
         export struct PluginRow {
             label: string,
@@ -60,71 +61,27 @@ mod ui {
                     font-size: 14px;
                     color: #374151;
                 }
-                VerticalLayout {
+                scroll := ScrollView {
                     x: 24px;
                     y: 52px;
                     width: parent.width - 48px;
                     height: 116px;
-                    spacing: 4px;
-                    for row in root.rows: Rectangle {
-                        height: 28px;
-                        Text {
-                            x: 0;
-                            y: 3px;
-                            width: parent.width - 36px;
-                            text: row.label;
-                            font-size: 16px;
-                            font-weight: 600;
-                            overflow: elide;
-                            color: #111827;
-                        }
-                        if row.loading: Rectangle {
-                            x: parent.width - 20px;
-                            y: 5px;
-                            width: 18px;
-                            height: 18px;
-                            if root.spinner-frame == 0: Image {
-                                width: parent.width;
-                                height: parent.height;
-                                source: @image-url("ui/arco-spin-0.svg");
-                            }
-                            if root.spinner-frame == 1: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-1.svg"); }
-                            if root.spinner-frame == 2: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-2.svg"); }
-                            if root.spinner-frame == 3: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-3.svg"); }
-                            if root.spinner-frame == 4: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-4.svg"); }
-                            if root.spinner-frame == 5: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-5.svg"); }
-                            if root.spinner-frame == 6: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-6.svg"); }
-                            if root.spinner-frame == 7: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-7.svg"); }
-                            if root.spinner-frame == 8: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-8.svg"); }
-                            if root.spinner-frame == 9: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-9.svg"); }
-                            if root.spinner-frame == 10: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-10.svg"); }
-                            if root.spinner-frame == 11: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-11.svg"); }
-                            if root.spinner-frame == 12: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-12.svg"); }
-                            if root.spinner-frame == 13: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-13.svg"); }
-                            if root.spinner-frame == 14: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-14.svg"); }
-                            if root.spinner-frame == 15: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-15.svg"); }
-                            if root.spinner-frame == 16: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-16.svg"); }
-                            if root.spinner-frame == 17: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-17.svg"); }
-                            if root.spinner-frame == 18: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-18.svg"); }
-                            if root.spinner-frame == 19: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-19.svg"); }
-                            if root.spinner-frame == 20: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-20.svg"); }
-                            if root.spinner-frame == 21: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-21.svg"); }
-                            if root.spinner-frame == 22: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-22.svg"); }
-                            if root.spinner-frame == 23: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-23.svg"); }
-                        }
-                        if row.show-status && !row.loading: Rectangle {
-                            x: parent.width - 16px;
-                            y: 6px;
-                            width: 12px;
-                            height: 12px;
-                            border-radius: 6px;
-                            background: row.icon-color;
+                    viewport-height: root.rows.length * 32px;
+                    Rectangle {
+                        width: parent.width;
+                        height: root.rows.length * 32px;
+                        for row[index] in root.rows: Rectangle {
+                            y: index * 32px;
+                            width: parent.width;
+                            height: 28px;
+                            Text { x: 0; y: 3px; width: parent.width - 36px; text: row.label; font-size: 16px; font-weight: 600; overflow: elide; color: #111827; }
+                            if row.show-status && !row.loading: Rectangle { x: parent.width - 16px; y: 6px; width: 12px; height: 12px; border-radius: 6px; background: row.icon-color; }
                         }
                     }
                 }
                 for row[index] in root.rows: Rectangle {
                     x: 24px;
-                    y: 52px + index * 32px;
+                    y: 52px + index * 32px - scroll.viewport-y;
                     width: parent.width - 48px;
                     height: 28px;
                     background: transparent;
