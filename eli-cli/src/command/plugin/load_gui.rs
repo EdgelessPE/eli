@@ -654,6 +654,7 @@ fn configure_load(
             }
             Err(_) => return,
         };
+        window.set_prompt(loading_prompt(attempt_inputs.len()).into());
         update_rows(&window, &state);
         window.set_busy(true);
         window.set_retry_available(false);
@@ -669,6 +670,7 @@ fn configure_load(
                 move |expanded_paths| {
                     let window_weak = window_weak.clone();
                     let state = Arc::clone(&state);
+                    let loading_count = expanded_paths.len();
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(window) = window_weak.upgrade() else {
                             return;
@@ -680,6 +682,7 @@ fn configure_load(
                             return;
                         };
                         window.set_rows(ModelRc::new(VecModel::from(rows)));
+                        window.set_prompt(loading_prompt(loading_count).into());
                     });
                 }
             })),
@@ -757,6 +760,10 @@ fn update_rows(window: &PluginLoadWindow, state: &Arc<Mutex<GuiState>>) {
     window.set_rows(ModelRc::new(VecModel::from(rows)));
 }
 
+fn loading_prompt(package_count: usize) -> String {
+    format!("正在加载 {package_count} 个插件包...")
+}
+
 fn file_label(path: &PathBuf) -> String {
     path.file_name()
         .filter(|name| !name.is_empty())
@@ -776,6 +783,11 @@ mod tests {
             input_prompt(&[PathBuf::from("plugin.7z")]),
             "是否将这个文件作为插件包加载？"
         );
+    }
+
+    #[test]
+    fn loading_prompt_uses_the_list_count() {
+        assert_eq!(loading_prompt(3), "正在加载 3 个插件包...");
     }
 
     #[test]
