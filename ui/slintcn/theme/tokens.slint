@@ -9,11 +9,13 @@
 // To remap a SEMANTIC ROLE: change the per-mode picks below.
 
 import { Palette } from "palette.slint";
+import { Palette as SystemPalette } from "std-widgets.slint";
 
 export enum ThemeMode { dark, light }
 
 export global Theme {
-    in-out property <ThemeMode> mode: ThemeMode.light;
+    in-out property <ThemeMode> mode:
+        SystemPalette.color-scheme == ColorScheme.dark ? ThemeMode.dark : ThemeMode.light;
 }
 
 export global Tokens {

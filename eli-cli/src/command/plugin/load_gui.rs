@@ -23,7 +23,7 @@ mod ui {
     slint::slint! {
         import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
         import { Tooltip } from "ui/slintcn/components/tooltip.slint";
-        import { ScrollView } from "std-widgets.slint";
+        import { Palette, ScrollView } from "std-widgets.slint";
 
         export struct PluginRow {
             label: string,
@@ -37,7 +37,7 @@ mod ui {
             title: "插件热加载工具";
             width: 420px;
             height: 248px;
-            background: #ffffff;
+            background: root.surface-color;
 
             in-out property <string> prompt;
             in-out property <[PluginRow]> rows: [];
@@ -49,6 +49,12 @@ mod ui {
             in-out property <length> tooltip-anchor-y: 0px;
             in-out property <bool> window-region-pending: true;
             in-out property <bool> titlebar-hit-test-pending: true;
+            property <bool> dark-mode: Palette.color-scheme == ColorScheme.dark;
+            property <color> surface-color: root.dark-mode ? #111827 : #ffffff;
+            property <color> text-color: root.dark-mode ? #f9fafb : #111827;
+            property <color> border-color: root.dark-mode ? #374151 : #d1d5db;
+            property <color> divider-color: root.dark-mode ? #374151 : #e5e7eb;
+            property <color> close-hover-color: root.dark-mode ? #374151 : #f3f4f6;
             callback load-requested();
             callback localboost-requested();
             callback cancel-requested();
@@ -80,8 +86,8 @@ mod ui {
             Rectangle {
                 width: parent.width;
                 height: parent.height;
-                background: #ffffff;
-                border-color: #d1d5db;
+                background: root.surface-color;
+                border-color: root.border-color;
                 border-width: 1px;
                 border-radius: 12px;
 
@@ -94,14 +100,14 @@ mod ui {
                     font-size: 14px;
                     font-weight: 600;
                     vertical-alignment: center;
-                    color: #111827;
+                    color: root.text-color;
                 }
                 close-button := Rectangle {
                     x: parent.width - 40px;
                     y: 2px;
                     width: 32px;
                     height: 32px;
-                    background: close-area.has-hover ? #f3f4f6 : transparent;
+                    background: close-area.has-hover ? root.close-hover-color : transparent;
                     border-radius: 6px;
 
                     Path {
@@ -114,7 +120,7 @@ mod ui {
                         viewbox-width: 14;
                         viewbox-height: 14;
                         fill: transparent;
-                        stroke: #111827;
+                        stroke: root.text-color;
                         stroke-width: 1.5px;
                         stroke-line-cap: round;
                         commands: "M 3 3 L 11 11 M 11 3 L 3 11";
@@ -129,7 +135,7 @@ mod ui {
                     y: 36px;
                     width: parent.width;
                     height: 1px;
-                    background: #e5e7eb;
+                    background: root.divider-color;
                 }
                 Text {
                     x: 20px;
@@ -137,7 +143,7 @@ mod ui {
                     width: parent.width - 40px;
                     text: root.prompt;
                     font-size: 14px;
-                    color: #111827;
+                    color: root.text-color;
                 }
                 scroll := ScrollView {
                     x: 20px;
@@ -152,7 +158,7 @@ mod ui {
                             y: index * 32px;
                             width: parent.width;
                             height: 28px;
-                            Text { x: 0; y: 3px; width: parent.width - 36px; text: row.label; font-size: 16px; font-weight: 600; overflow: elide; color: #111827; }
+                            Text { x: 0; y: 3px; width: parent.width - 36px; text: row.label; font-size: 16px; font-weight: 600; overflow: elide; color: root.text-color; }
                             if row.loading: Rectangle {
                                 x: parent.width - 20px;
                                 y: 5px;
