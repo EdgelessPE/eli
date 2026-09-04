@@ -33,6 +33,9 @@ mod ui {
             in-out property <bool> busy: false;
             in-out property <bool> retry-available: false;
             in-out property <int> spinner-frame: 0;
+            in-out property <string> tooltip-text: "";
+            in-out property <bool> tooltip-open: false;
+            in-out property <length> tooltip-anchor-y: 0px;
             callback load-requested();
             callback localboost-requested();
             callback cancel-requested();
@@ -56,7 +59,7 @@ mod ui {
                 Text {
                     x: 24px;
                     y: 24px;
-                    width: parent.width - 48px;
+                    width: parent.width - 40px;
                     text: root.prompt;
                     font-size: 14px;
                     color: #374151;
@@ -64,7 +67,7 @@ mod ui {
                 scroll := ScrollView {
                     x: 24px;
                     y: 52px;
-                    width: parent.width - 48px;
+                    width: parent.width - 40px;
                     height: 116px;
                     viewport-height: root.rows.length * 32px;
                     Rectangle {
@@ -112,20 +115,22 @@ mod ui {
                 for row[index] in root.rows: Rectangle {
                     x: 24px;
                     y: 52px + index * 32px - scroll.viewport-y;
-                    width: parent.width - 48px;
+                    width: parent.width - 40px;
                     height: 28px;
                     background: transparent;
                     hover := TouchArea {
                         x: parent.width - 20px;
                         width: 20px;
                         height: parent.height;
-                    }
-                    Tooltip {
-                        x: 0;
-                        y: parent.height + 2px;
-                        width: parent.width;
-                        text: row.detail;
-                        open: row.detail != "" && hover.has-hover;
+                        changed has-hover => {
+                            if (self.has-hover && row.detail != "") {
+                                root.tooltip-text = row.detail;
+                                root.tooltip-anchor-y = parent.y;
+                                root.tooltip-open = true;
+                            } else if (!self.has-hover) {
+                                root.tooltip-open = false;
+                            }
+                        }
                     }
                 }
                 HorizontalLayout {
@@ -156,6 +161,13 @@ mod ui {
                         disabled: root.busy;
                         clicked => { root.load-requested(); }
                     }
+                }
+                Tooltip {
+                    x: 24px;
+                    width: parent.width - 48px;
+                    text: root.tooltip-text;
+                    open: root.tooltip-open;
+                    anchor-y: root.tooltip-anchor-y;
                 }
             }
         }
@@ -288,7 +300,7 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
         &window,
         Arc::clone(&ctx),
         inputs.clone(),
-        options,
+        options.clone(),
         Arc::clone(&state),
         false,
     );
@@ -356,7 +368,27 @@ fn configure_load(
             } else {
                 options.local_boost
             },
-            ..options
+            on_inputs_expanded: Some(Arc::new({
+                let window_weak = window.as_weak();
+                let state = Arc::clone(&state);
+                move |expanded_paths| {
+                    let window_weak = window_weak.clone();
+                    let state = Arc::clone(&state);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(window) = window_weak.upgrade() else {
+                            return;
+                        };
+                        let rows = if let Ok(mut state) = state.lock() {
+                            state.begin(expanded_paths, attempt_localboost);
+                            state.rows()
+                        } else {
+                            return;
+                        };
+                        window.set_rows(ModelRc::new(VecModel::from(rows)));
+                    });
+                }
+            })),
+            ..options.clone()
         };
         let window_weak = window.as_weak();
         let ctx = Arc::clone(&ctx);
@@ -436,6 +468,14 @@ mod tests {
         assert_eq!(
             input_prompt(&[PathBuf::from("plugin.7z"), PathBuf::from(".")]),
             "是否加载这些文件和目录中的插件包？"
+        );
+    }
+
+    #[test]
+    fn directory_prompt_does_not_embed_the_directory_name() {
+        assert_eq!(
+            input_prompt(&[PathBuf::from(".")]),
+            "是否加载此目录中的插件包？"
         );
     }
 

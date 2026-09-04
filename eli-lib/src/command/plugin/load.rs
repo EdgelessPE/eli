@@ -26,11 +26,14 @@ pub enum LocalBoostHandling {
     Load,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub type InputExpansionObserver = Arc<dyn Fn(Vec<PathBuf>) + Send + Sync>;
+
+#[derive(Clone)]
 pub struct LoadOptions {
     pub recursive: bool,
     pub jobs: NonZeroUsize,
     pub local_boost: LocalBoostHandling,
+    pub on_inputs_expanded: Option<InputExpansionObserver>,
 }
 
 impl Default for LoadOptions {
@@ -39,6 +42,7 @@ impl Default for LoadOptions {
             recursive: false,
             jobs: NonZeroUsize::new(2).expect("the default job count is non-zero"),
             local_boost: LocalBoostHandling::Ignore,
+            on_inputs_expanded: None,
         }
     }
 }
@@ -259,6 +263,15 @@ fn load_with(
     process_lock: Arc<ProcessPublishLock>,
 ) -> io::Result<LoadSummary> {
     let expanded = expand_inputs(inputs, options.recursive);
+    if let Some(observer) = &options.on_inputs_expanded {
+        observer(
+            expanded
+                .files
+                .iter()
+                .map(|input| input.path.clone())
+                .collect(),
+        );
+    }
     let mut results = expanded.errors;
     let mut tasks = VecDeque::new();
     let mut files_by_name = HashMap::<String, Vec<usize>>::new();
@@ -1441,6 +1454,33 @@ mod tests {
                 .iter()
                 .any(|item| item.path.ends_with("c.7zl"))
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_expanded_packages_before_loading_them() {
+        let root = test_root();
+        let package = root.join("preview.7z");
+        fs::write(&package, "PreviewPlugin").unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observer = Arc::clone(&observed);
+
+        let summary = load_with(
+            &[root.clone()],
+            LoadOptions {
+                on_inputs_expanded: Some(Arc::new(move |paths| {
+                    *observer.lock().unwrap() = paths;
+                })),
+                ..LoadOptions::default()
+            },
+            runtime_paths(&root),
+            Arc::new(FakeLoader),
+            Arc::new(ProcessPublishLock::new().unwrap()),
+        )
+        .unwrap();
+
+        assert!(summary.is_success());
+        assert_eq!(*observed.lock().unwrap(), vec![package]);
         fs::remove_dir_all(root).unwrap();
     }
 

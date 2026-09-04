@@ -1,10 +1,26 @@
-export component Tooltip inherits Rectangle {
+export component Tooltip inherits PopupWindow {
     in property <string> text;
     in property <bool> open: false;
+    in property <length> anchor-y: 0px;
 
-    visible: open;
-    background: #111827;
-    border-radius: 6px;
+    x: 0px;
+    y: root.anchor-y - root.height - 4px;
+    close-policy: PopupClosePolicy.no-auto-close;
+
+    changed open => {
+        if (root.open) {
+            root.show();
+        } else {
+            root.close();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #111827;
+        border-radius: 6px;
+    }
 
     label := Text {
         x: 8px;
