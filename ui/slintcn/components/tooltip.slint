@@ -1,36 +1,30 @@
-export component Tooltip inherits PopupWindow {
+import { ScrollView } from "std-widgets.slint";
+
+export component Tooltip inherits Rectangle {
     in property <string> text;
     in property <bool> open: false;
     in property <length> anchor-y: 0px;
+    in property <length> max-bottom: 176px;
 
-    x: 0px;
-    y: root.anchor-y - root.height - 4px;
-    close-policy: PopupClosePolicy.no-auto-close;
+    visible: open;
+    y: min(max(4px, root.anchor-y - root.height - 4px), root.max-bottom - root.height);
+    background: #111827;
+    border-radius: 6px;
 
-    changed open => {
-        if (root.open) {
-            root.show();
-        } else {
-            root.close();
-        }
-    }
-
-    Rectangle {
-        width: parent.width;
-        height: parent.height;
-        background: #111827;
-        border-radius: 6px;
-    }
-
-    label := Text {
+    scroll := ScrollView {
         x: 8px;
         y: 7px;
         width: parent.width - 16px;
-        text: root.text;
-        wrap: word-wrap;
-        font-size: 12px;
-        color: #ffffff;
+        height: parent.height - 14px;
+        viewport-height: label.preferred-height;
+        label := Text {
+            width: parent.width;
+            text: root.text;
+            wrap: word-wrap;
+            font-size: 12px;
+            color: #ffffff;
+        }
     }
 
-    height: label.preferred-height + 14px;
+    height: min(label.preferred-height + 14px, 160px);
 }

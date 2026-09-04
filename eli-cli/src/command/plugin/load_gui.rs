@@ -170,6 +170,7 @@ mod ui {
                     text: root.tooltip-text;
                     open: root.tooltip-open;
                     anchor-y: root.tooltip-anchor-y;
+                    max-bottom: parent.height - 72px;
                 }
             }
         }
