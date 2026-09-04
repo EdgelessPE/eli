@@ -101,8 +101,8 @@ mod ui {
                     y: 2px;
                     width: 32px;
                     height: 32px;
-                    background: close-area.has-hover ? #111827 : transparent;
-                    border-radius: 16px;
+                    background: close-area.has-hover ? #f3f4f6 : transparent;
+                    border-radius: 6px;
 
                     Path {
                         x: 9px;
@@ -114,7 +114,7 @@ mod ui {
                         viewbox-width: 14;
                         viewbox-height: 14;
                         fill: transparent;
-                        stroke: close-area.has-hover ? #ffffff : #111827;
+                        stroke: #111827;
                         stroke-width: 1.5px;
                         stroke-line-cap: round;
                         commands: "M 3 3 L 11 11 M 11 3 L 3 11";
@@ -129,7 +129,7 @@ mod ui {
                     y: 36px;
                     width: parent.width;
                     height: 1px;
-                    background: #111827;
+                    background: #e5e7eb;
                 }
                 Text {
                     x: 20px;
