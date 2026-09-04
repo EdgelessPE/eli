@@ -3,11 +3,20 @@ use eli_lib::command::plugin::{
     LoadOptions, LoadProgress, LoadStatus, LoadSummary, LocalBoostHandling,
 };
 use eli_lib::dependency::RuntimeEnvironment;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CallWindowProcW, DefWindowProcW, GWL_STYLE, GWLP_WNDPROC, GetWindowLongPtrW, GetWindowRect,
+    HTCAPTION, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPos, WM_NCDESTROY, WM_NCHITTEST, WNDPROC, WS_POPUP, WS_VISIBLE,
+};
 
 #[allow(deprecated)]
 mod ui {
@@ -38,9 +47,13 @@ mod ui {
             in-out property <string> tooltip-text: "";
             in-out property <bool> tooltip-open: false;
             in-out property <length> tooltip-anchor-y: 0px;
+            in-out property <bool> window-region-pending: true;
+            in-out property <bool> titlebar-hit-test-pending: true;
             callback load-requested();
             callback localboost-requested();
             callback cancel-requested();
+            callback apply-window-region() -> bool;
+            callback install-titlebar-hit-test() -> bool;
 
             Timer {
                 interval: 33ms;
@@ -49,28 +62,88 @@ mod ui {
                     root.spinner-frame = Math.mod(root.spinner-frame + 1, 24);
                 }
             }
+            Timer {
+                interval: 16ms;
+                running: root.window-region-pending;
+                triggered => {
+                    root.window-region-pending = !root.apply-window-region();
+                }
+            }
+            Timer {
+                interval: 200ms;
+                running: root.titlebar-hit-test-pending;
+                triggered => {
+                    root.titlebar-hit-test-pending = !root.install-titlebar-hit-test();
+                }
+            }
 
             Rectangle {
                 width: parent.width;
                 height: parent.height;
                 background: #ffffff;
-                border-color: #000000;
+                border-color: #d1d5db;
                 border-width: 1px;
                 border-radius: 12px;
 
                 Text {
-                    x: 24px;
-                    y: 24px;
+                    x: 16px;
+                    y: 0px;
+                    width: parent.width - 64px;
+                    height: 36px;
+                    text: "插件热加载工具";
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    color: #111827;
+                }
+                close-button := Rectangle {
+                    x: parent.width - 40px;
+                    y: 2px;
+                    width: 32px;
+                    height: 32px;
+                    background: close-area.has-hover ? #111827 : transparent;
+                    border-radius: 16px;
+
+                    Path {
+                        x: 9px;
+                        y: 9px;
+                        width: 14px;
+                        height: 14px;
+                        viewbox-x: 0;
+                        viewbox-y: 0;
+                        viewbox-width: 14;
+                        viewbox-height: 14;
+                        fill: transparent;
+                        stroke: close-area.has-hover ? #ffffff : #111827;
+                        stroke-width: 1.5px;
+                        stroke-line-cap: round;
+                        commands: "M 3 3 L 11 11 M 11 3 L 3 11";
+                    }
+                    close-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel-requested(); }
+                    }
+                }
+                Rectangle {
+                    x: 0px;
+                    y: 36px;
+                    width: parent.width;
+                    height: 1px;
+                    background: #111827;
+                }
+                Text {
+                    x: 20px;
+                    y: 53px;
                     width: parent.width - 40px;
                     text: root.prompt;
                     font-size: 14px;
-                    color: #374151;
+                    color: #111827;
                 }
                 scroll := ScrollView {
-                    x: 24px;
-                    y: 52px;
+                    x: 20px;
+                    y: 79px;
                     width: parent.width - 40px;
-                    height: 116px;
+                    height: parent.height - 140px;
                     viewport-height: root.rows.length * 32px;
                     Rectangle {
                         width: parent.width - 28px;
@@ -111,34 +184,27 @@ mod ui {
                                 if root.spinner-frame == 23: Image { width: parent.width; height: parent.height; source: @image-url("ui/arco-spin-23.svg"); }
                             }
                             if row.show-status && !row.loading: Rectangle { x: parent.width - 16px; y: 6px; width: 12px; height: 12px; border-radius: 6px; background: row.icon-color; }
-                        }
-                    }
-                }
-                for row[index] in root.rows: Rectangle {
-                    x: 24px;
-                    y: 52px + index * 32px + scroll.viewport-y;
-                    width: parent.width - 40px;
-                    height: 28px;
-                    background: transparent;
-                    hover := TouchArea {
-                        x: parent.width - 64px;
-                        width: 64px;
-                        height: parent.height;
-                        changed has-hover => {
-                            if (self.has-hover && row.detail != "") {
-                                root.tooltip-text = row.detail;
-                                root.tooltip-anchor-y = parent.y;
-                                root.tooltip-open = true;
-                            } else if (!self.has-hover) {
-                                root.tooltip-open = false;
+                            hover := TouchArea {
+                                x: parent.width - 64px;
+                                width: 64px;
+                                height: parent.height;
+                                changed has-hover => {
+                                    if (self.has-hover && row.detail != "") {
+                                        root.tooltip-text = row.detail;
+                                        root.tooltip-anchor-y = scroll.y + parent.y + scroll.viewport-y;
+                                        root.tooltip-open = true;
+                                    } else if (!self.has-hover) {
+                                        root.tooltip-open = false;
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 HorizontalLayout {
-                    x: 24px;
-                    y: parent.height - 60px;
-                    width: parent.width - 48px;
+                    x: 20px;
+                    y: parent.height - 48px;
+                    width: parent.width - 40px;
                     height: 36px;
                     spacing: 8px;
                     alignment: end;
@@ -165,12 +231,12 @@ mod ui {
                     }
                 }
                 Tooltip {
-                    x: 24px;
-                    width: parent.width - 48px;
+                    x: 20px;
+                    width: parent.width - 40px;
                     text: root.tooltip-text;
                     open: root.tooltip-open;
                     anchor-y: root.tooltip-anchor-y;
-                    max-bottom: parent.height - 72px;
+                    max-bottom: parent.height - 60px;
                 }
             }
         }
@@ -308,11 +374,14 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
     ctx.dependencies()
         .require_environment(RuntimeEnvironment::WindowsPE)?;
 
+    install_software_backend()?;
     let window = PluginLoadWindow::new().map_err(io::Error::other)?;
     let state = Arc::new(Mutex::new(GuiState::new(inputs.clone())));
     window.set_prompt(input_prompt(&inputs).into());
     update_rows(&window, &state);
     configure_cancel(&window);
+    configure_window_region(&window);
+    configure_titlebar_hit_test(&window);
     configure_load(
         &window,
         Arc::clone(&ctx),
@@ -323,6 +392,15 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
     );
     configure_load(&window, ctx, inputs, options, state, true);
     window.run().map_err(io::Error::other)
+}
+
+fn install_software_backend() -> io::Result<()> {
+    let backend = i_slint_backend_winit::Backend::builder()
+        .with_renderer_name("software")
+        .build()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    slint::platform::set_platform(Box::new(backend))
+        .map_err(|error| io::Error::other(error.to_string()))
 }
 
 fn input_prompt(inputs: &[PathBuf]) -> &'static str {
@@ -348,6 +426,206 @@ fn configure_cancel(window: &PluginLoadWindow) {
             let _ = window.hide();
         }
     });
+}
+
+fn configure_window_region(window: &PluginLoadWindow) {
+    let window_weak = window.as_weak();
+    window.on_apply_window_region(move || {
+        let Some(window) = window_weak.upgrade() else {
+            return false;
+        };
+        apply_window_region(&window)
+    });
+}
+
+fn native_window_handle(window: &PluginLoadWindow) -> Option<HWND> {
+    let window_handle = window.window().window_handle();
+    let raw_window_handle = window_handle.window_handle().ok()?;
+    let RawWindowHandle::Win32(window_handle) = raw_window_handle.as_raw() else {
+        return None;
+    };
+    Some(isize::from(window_handle.hwnd) as HWND)
+}
+
+fn apply_window_region(window: &PluginLoadWindow) -> bool {
+    let Some(window_handle) = native_window_handle(window) else {
+        return false;
+    };
+    let size = window.window().size();
+    let corner_diameter = rounded_corner_diameter(window.window().scale_factor());
+    let region = unsafe {
+        CreateRoundRectRgn(
+            0,
+            0,
+            size.width as i32,
+            size.height as i32,
+            corner_diameter,
+            corner_diameter,
+        )
+    };
+    if region.is_null() {
+        return false;
+    }
+    let popup_applied =
+        apply_popup_window_style(window_handle, size.width as i32, size.height as i32);
+    let region_applied = unsafe { SetWindowRgn(window_handle, region, 1) } != 0;
+    if !region_applied {
+        unsafe {
+            DeleteObject(region);
+        }
+    }
+    popup_applied && region_applied
+}
+
+fn apply_popup_window_style(window_handle: HWND, width: i32, height: i32) -> bool {
+    let current_style = unsafe { GetWindowLongPtrW(window_handle, GWL_STYLE) as u32 };
+    let popup_style = popup_window_style(current_style);
+    unsafe {
+        SetWindowLongPtrW(window_handle, GWL_STYLE, popup_style as isize);
+        SetWindowPos(
+            window_handle,
+            std::ptr::null_mut(),
+            0,
+            0,
+            width,
+            height,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    let applied_style = unsafe { GetWindowLongPtrW(window_handle, GWL_STYLE) as u32 };
+    applied_style == popup_style
+}
+
+fn configure_titlebar_hit_test(window: &PluginLoadWindow) {
+    let window_weak = window.as_weak();
+    window.on_install_titlebar_hit_test(move || {
+        let Some(window) = window_weak.upgrade() else {
+            return false;
+        };
+        let Some(window_handle) = native_window_handle(&window) else {
+            return false;
+        };
+        let size = window.window().size();
+        install_titlebar_hit_test(
+            window_handle,
+            size.width as i32,
+            window.window().scale_factor(),
+        )
+    });
+}
+
+fn popup_window_style(current_style: u32) -> u32 {
+    WS_POPUP | (current_style & WS_VISIBLE)
+}
+
+fn rounded_corner_diameter(scale_factor: f32) -> i32 {
+    (24.0 * scale_factor).round() as i32
+}
+
+#[derive(Clone, Copy)]
+struct TitlebarHitTest {
+    original_procedure: WNDPROC,
+    width: i32,
+    scale_factor: f32,
+}
+
+fn titlebar_hit_tests() -> &'static Mutex<HashMap<isize, TitlebarHitTest>> {
+    static TITLEBAR_HIT_TESTS: OnceLock<Mutex<HashMap<isize, TitlebarHitTest>>> = OnceLock::new();
+    TITLEBAR_HIT_TESTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn install_titlebar_hit_test(window_handle: HWND, width: i32, scale_factor: f32) -> bool {
+    let key = window_handle as isize;
+    let Ok(mut hit_tests) = titlebar_hit_tests().lock() else {
+        return false;
+    };
+    if hit_tests.contains_key(&key) {
+        return true;
+    }
+    let original_procedure = unsafe {
+        SetWindowLongPtrW(
+            window_handle,
+            GWLP_WNDPROC,
+            titlebar_window_procedure as *const () as isize,
+        )
+    };
+    if original_procedure == 0 {
+        return false;
+    }
+    let original_procedure = unsafe { std::mem::transmute::<isize, WNDPROC>(original_procedure) };
+    if original_procedure.is_none() {
+        return false;
+    }
+    hit_tests.insert(
+        key,
+        TitlebarHitTest {
+            original_procedure,
+            width,
+            scale_factor,
+        },
+    );
+    true
+}
+
+unsafe extern "system" fn titlebar_window_procedure(
+    window_handle: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let key = window_handle as isize;
+    let hit_test = titlebar_hit_tests()
+        .lock()
+        .ok()
+        .and_then(|hit_tests| hit_tests.get(&key).copied());
+    if message == WM_NCHITTEST
+        && hit_test.is_some_and(|hit_test| is_titlebar_hit(window_handle, lparam, hit_test))
+    {
+        return HTCAPTION as LRESULT;
+    }
+    let result = if let Some(hit_test) = hit_test {
+        unsafe {
+            CallWindowProcW(
+                hit_test.original_procedure,
+                window_handle,
+                message,
+                wparam,
+                lparam,
+            )
+        }
+    } else {
+        unsafe { DefWindowProcW(window_handle, message, wparam, lparam) }
+    };
+    if message == WM_NCDESTROY {
+        if let Ok(mut hit_tests) = titlebar_hit_tests().lock() {
+            hit_tests.remove(&key);
+        }
+    }
+    result
+}
+
+fn is_titlebar_hit(window_handle: HWND, lparam: LPARAM, hit_test: TitlebarHitTest) -> bool {
+    let mut window_rect: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetWindowRect(window_handle, &mut window_rect) } == 0 {
+        return false;
+    }
+    is_titlebar_hit_in_rect(window_rect, lparam, hit_test)
+}
+
+fn is_titlebar_hit_in_rect(window_rect: RECT, lparam: LPARAM, hit_test: TitlebarHitTest) -> bool {
+    let screen_x = lparam as i16 as i32;
+    let screen_y = (lparam >> 16) as i16 as i32;
+    let titlebar_height = logical_to_physical(36, hit_test.scale_factor);
+    let left_inset = logical_to_physical(8, hit_test.scale_factor);
+    let close_button_inset = logical_to_physical(48, hit_test.scale_factor);
+    screen_x >= window_rect.left + left_inset
+        && screen_x < window_rect.left + hit_test.width - close_button_inset
+        && screen_y >= window_rect.top
+        && screen_y < window_rect.top + titlebar_height
+}
+
+fn logical_to_physical(value: i32, scale_factor: f32) -> i32 {
+    (value as f32 * scale_factor).round() as i32
 }
 
 fn configure_load(
@@ -514,6 +792,53 @@ mod tests {
             input_prompt(&[PathBuf::from(".")]),
             "是否加载此目录中的插件包？"
         );
+    }
+
+    #[test]
+    fn rounded_corner_region_scales_with_the_display() {
+        assert_eq!(rounded_corner_diameter(1.0), 24);
+        assert_eq!(rounded_corner_diameter(1.25), 30);
+    }
+
+    #[test]
+    fn popup_window_style_only_keeps_visibility() {
+        assert_eq!(popup_window_style(0), WS_POPUP);
+        assert_eq!(popup_window_style(WS_VISIBLE), WS_POPUP | WS_VISIBLE);
+    }
+
+    #[test]
+    fn titlebar_hit_test_excludes_content_and_close_button() {
+        let hit_test = TitlebarHitTest {
+            original_procedure: None,
+            width: 420,
+            scale_factor: 1.0,
+        };
+        let rect = RECT {
+            left: 100,
+            top: 200,
+            right: 520,
+            bottom: 448,
+        };
+
+        assert!(is_titlebar_hit_in_rect(
+            rect,
+            screen_position_lparam(160, 220),
+            hit_test
+        ));
+        assert!(!is_titlebar_hit_in_rect(
+            rect,
+            screen_position_lparam(160, 250),
+            hit_test
+        ));
+        assert!(!is_titlebar_hit_in_rect(
+            rect,
+            screen_position_lparam(490, 220),
+            hit_test
+        ));
+    }
+
+    fn screen_position_lparam(x: i32, y: i32) -> LPARAM {
+        ((y as u16 as isize) << 16) | x as u16 as isize
     }
 
     #[test]
