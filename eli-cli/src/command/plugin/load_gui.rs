@@ -116,7 +116,7 @@ mod ui {
                 }
                 for row[index] in root.rows: Rectangle {
                     x: 24px;
-                    y: 52px + index * 32px - scroll.viewport-y;
+                    y: 52px + index * 32px + scroll.viewport-y;
                     width: parent.width - 40px;
                     height: 28px;
                     background: transparent;
