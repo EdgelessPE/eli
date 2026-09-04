@@ -143,6 +143,7 @@ fn load(
     jobs: usize,
     localboost: LocalBoostArg,
 ) -> io::Result<()> {
+    let paths = normalize_load_paths(paths);
     let jobs = NonZeroUsize::new(jobs).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -194,6 +195,14 @@ fn load(
     }
 }
 
+/// 清除 Windows 命令解释器可能遗留在路径两端的包裹引号。
+fn normalize_load_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .map(|path| PathBuf::from(path.to_string_lossy().trim_matches('"')))
+        .collect()
+}
+
 fn list(ctx: &Ctx) -> io::Result<()> {
     warn_automatic_bootdisk_selection(ctx.bootdisk()?);
     let plugins = eli_lib::command::plugin::list(ctx)?;
@@ -240,4 +249,25 @@ fn outdate(ctx: &Ctx, plugin: &std::ffi::OsStr) -> io::Result<()> {
     let moved = eli_lib::command::plugin::outdate(ctx, plugin)?;
     println!("Outdated {}", moved.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_load_paths_removes_command_line_wrapper_quotes() {
+        let paths = normalize_load_paths(vec![
+            PathBuf::from("\"C:\\Edgeless\\Resource\""),
+            PathBuf::from("C:\\Edgeless\\Resource\""),
+        ]);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("C:\\Edgeless\\Resource"),
+                PathBuf::from("C:\\Edgeless\\Resource"),
+            ]
+        );
+    }
 }
