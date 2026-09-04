@@ -66,7 +66,8 @@ mod ui {
                     height: 116px;
                     spacing: 4px;
                     for row in root.rows: Rectangle {
-                        height: 28px;
+                        property <bool> detail-visible: row.detail != "" && hover.has-hover;
+                        height: detail-visible ? 66px : 28px;
                         Text {
                             x: 0;
                             y: 3px;
@@ -123,14 +124,14 @@ mod ui {
                             x: parent.width - 20px;
                             y: 0;
                             width: 20px;
-                            height: parent.height;
+                            height: 28px;
                         }
-                        if row.detail != "" && hover.has-hover: Rectangle {
+                        if detail-visible: Rectangle {
                             x: 0;
-                            y: parent.height + 2px;
+                            y: 30px;
                             width: parent.width;
                             height: 36px;
-                            z: 100;
+                            z: 1;
                             background: #111827;
                             border-radius: 6px;
                             Text {
