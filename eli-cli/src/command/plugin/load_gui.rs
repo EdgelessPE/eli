@@ -71,7 +71,7 @@ mod ui {
                     height: 116px;
                     viewport-height: root.rows.length * 32px;
                     Rectangle {
-                        width: parent.width;
+                        width: parent.width - 16px;
                         height: root.rows.length * 32px;
                         for row[index] in root.rows: Rectangle {
                             y: index * 32px;
@@ -119,7 +119,7 @@ mod ui {
                     height: 28px;
                     background: transparent;
                     hover := TouchArea {
-                        x: parent.width - 20px;
+                        x: parent.width - 36px;
                         width: 20px;
                         height: parent.height;
                         changed has-hover => {
