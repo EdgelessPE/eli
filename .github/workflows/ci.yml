@@ -45,6 +45,13 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
 
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-stable
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
 
