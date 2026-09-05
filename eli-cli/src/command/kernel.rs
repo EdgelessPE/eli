@@ -1,12 +1,23 @@
 use super::warn_automatic_bootdisk_selection;
 use clap::Subcommand;
 use eli_lib::Ctx;
+use eli_lib::command::kernel::DownloadResult;
 use std::io;
+use std::path::PathBuf;
 
 const VERSION_COLUMN_WIDTH: usize = 12;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum KernelCommand {
+    /// Download the latest Edgeless kernel ISO.
+    Download {
+        /// Directory in which to save the downloaded ISO.
+        #[arg(short, long, value_name = "DIRECTORY")]
+        directory: PathBuf,
+        /// Replace an existing Edgeless.iso in the download directory.
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Show a kernel version from the current PE, the network, or a boot disk.
     Version {
         #[command(subcommand)]
@@ -26,6 +37,20 @@ pub(crate) enum KernelVersionCommand {
 
 pub(crate) fn execute(ctx: &Ctx, command: KernelCommand) -> io::Result<()> {
     match command {
+        KernelCommand::Download { directory, force } => {
+            match eli_lib::command::kernel::download(&directory, force)? {
+                DownloadResult::Downloaded(destination) => {
+                    println!("Downloaded kernel ISO to {}", destination.display());
+                }
+                DownloadResult::Skipped(destination) => {
+                    println!(
+                        "Kernel ISO already exists at {}; skipped download",
+                        destination.display()
+                    );
+                }
+            }
+            Ok(())
+        }
         KernelCommand::Version { command } => match command {
             KernelVersionCommand::Current => print(eli_lib::command::kernel::current(ctx)?),
             KernelVersionCommand::Latest => print(eli_lib::command::kernel::latest()?),
@@ -49,6 +74,7 @@ fn print(version: eli_lib::version_identifier::EdgelessVersionIdentifier) -> io:
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use eli_lib::version_identifier::EdgelessVersionIdentifier;
 
     #[test]
@@ -60,5 +86,10 @@ mod tests {
             super::super::bootdisk::format_release(version),
             "Beta(Official)"
         );
+    }
+
+    #[test]
+    fn keeps_kernel_download_directory_required() {
+        assert!(crate::Cli::try_parse_from(["eli", "kernel", "download"]).is_err());
     }
 }

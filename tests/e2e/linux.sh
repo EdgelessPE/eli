@@ -70,6 +70,12 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'Linux' "$stderr_path"
 
+if "$eli" kernel download > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Kernel download unexpectedly accepted a missing directory.' >&2
+    exit 1
+fi
+grep -Fq -- '--directory' "$stderr_path"
+
 "$eli" bootdisk list > "$stdout_path" 2> "$stderr_path"
 bootdisk_header='Bootdisk'
 version_header='Version'

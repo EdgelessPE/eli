@@ -107,6 +107,14 @@ try {
         throw "Current kernel version did not report its environment dependency: '$currentKernelError'."
     }
 
+    & $eli kernel download 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Kernel download unexpectedly accepted a missing directory.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--directory')) {
+        throw 'Kernel download did not require --directory.'
+    }
+
     & $eli bootdisk list 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Boot-disk listing failed.' }
     $listed = @(Get-Content -LiteralPath $stdoutPath)

@@ -320,6 +320,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_kernel_download_with_an_explicit_directory() {
+        let cli =
+            Cli::try_parse_from(["eli", "kernel", "download", "--directory", "/tmp/iso"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Kernel {
+                command: KernelCommand::Download {
+                    directory,
+                    force: false,
+                },
+            } if directory == Path::new("/tmp/iso")
+        ));
+    }
+
+    #[test]
+    fn parses_kernel_download_force_overwrite() {
+        let cli =
+            Cli::try_parse_from(["eli", "kernel", "download", "-d", "/tmp/iso", "-f"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Kernel {
+                command: KernelCommand::Download { force: true, .. },
+            }
+        ));
+    }
+
+    #[test]
     fn parses_the_resolution_validation_override() {
         let cli = Cli::try_parse_from([
             "eli",
