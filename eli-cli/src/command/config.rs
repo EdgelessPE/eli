@@ -16,13 +16,20 @@ pub(crate) enum ConfigCommand {
         key: String,
         #[arg(value_name = "VALUE")]
         value: String,
+        /// Skip built-in resolution availability checks while preserving the required text format.
+        #[arg(long)]
+        skip_resolution_validation: bool,
     },
 }
 
 pub(crate) fn execute(ctx: &Ctx, command: ConfigCommand) -> io::Result<()> {
     match command {
         ConfigCommand::List => list(ctx),
-        ConfigCommand::Set { key, value } => set(ctx, &key, &value),
+        ConfigCommand::Set {
+            key,
+            value,
+            skip_resolution_validation,
+        } => set(ctx, &key, &value, skip_resolution_validation),
     }
 }
 
@@ -43,8 +50,15 @@ fn list(ctx: &Ctx) -> io::Result<()> {
     Ok(())
 }
 
-fn set(ctx: &Ctx, key: &str, value: &str) -> io::Result<()> {
-    let path = eli_lib::command::config::set(ctx, key, value)?;
+fn set(ctx: &Ctx, key: &str, value: &str, skip_resolution_validation: bool) -> io::Result<()> {
+    let path = eli_lib::command::config::set_with_options(
+        ctx,
+        key,
+        value,
+        eli_lib::command::config::SetOptions {
+            skip_resolution_validation,
+        },
+    )?;
     println!("Set {key} at {}", path.display());
     Ok(())
 }

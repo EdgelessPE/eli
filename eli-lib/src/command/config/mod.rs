@@ -2,7 +2,7 @@ mod list;
 mod set;
 
 pub use list::{ConfigEntry, list};
-pub use set::set;
+pub use set::{SetOptions, set, set_with_options};
 
 use crate::version_identifier::EdgelessVersion;
 use std::fmt;

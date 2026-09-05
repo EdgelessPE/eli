@@ -175,9 +175,23 @@ try {
     if ((Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\分辨率.txt')) -ne 'w1920 h1080 b32 f60') {
         throw 'Resolution config was not written.'
     }
+    & $eli --bootdisk $driveRoots[0] config set resolution 'w1080 h1920 b32 f60' `
+        --skip-resolution-validation 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\分辨率.txt')) -ne 'w1080 h1920 b32 f60') {
+        throw 'Resolution validation override did not write the requested value.'
+    }
     & $eli --bootdisk $driveRoots[0] config set homepage example.com 1> $stdoutPath 2> $stderrPath
     if ((Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\HomePage.txt')) -ne 'http://example.com') {
         throw 'Homepage config was not normalized and written.'
+    }
+    & $eli --bootdisk $driveRoots[0] config set resolution auto 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\分辨率.txt'))) {
+        throw 'Automatic resolution did not remove the resolution config.'
+    }
+    & $eli --bootdisk $driveRoots[0] config set homepage false 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\HomePage.txt'))) {
+        throw 'Disabling homepage did not remove the homepage config.'
     }
     $wallpaperPath = Join-Path $resolvedTestRoot 'wallpaper.jpg'
     Set-Content -AsByteStream -NoNewline -LiteralPath $wallpaperPath -Value ([byte[]](0xFF, 0xD8, 0xFF, 0xD9))

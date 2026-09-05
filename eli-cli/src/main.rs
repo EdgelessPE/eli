@@ -283,8 +283,36 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Config {
-                command: ConfigCommand::Set { key, value }
+                command:
+                    ConfigCommand::Set {
+                        key,
+                        value,
+                        skip_resolution_validation: false,
+                    }
             } if key == "resolution" && value == "w1920 h1080 b32 f60"
+        ));
+    }
+
+    #[test]
+    fn parses_the_resolution_validation_override() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "config",
+            "set",
+            "resolution",
+            "w1080 h1920 b32 f60",
+            "--skip-resolution-validation",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Set {
+                    skip_resolution_validation: true,
+                    ..
+                }
+            }
         ));
     }
 }

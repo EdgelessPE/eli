@@ -13,6 +13,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static HOMEPAGE_PATTERN: OnceLock<Regex> = OnceLock::new();
 
+/// 配置写入选项。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SetOptions {
+    /// 跳过自定义分辨率文本的可用值校验。
+    pub skip_resolution_validation: bool,
+}
+
 /// 设置配置项并返回被修改的目标路径。
 pub fn set(ctx: &Ctx, key: &str, value: &str) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
@@ -24,12 +31,45 @@ pub fn set(ctx: &Ctx, key: &str, value: &str) -> io::Result<PathBuf> {
     )
 }
 
+/// 使用指定选项设置配置项并返回被修改的目标路径。
+pub fn set_with_options(
+    ctx: &Ctx,
+    key: &str,
+    value: &str,
+    options: SetOptions,
+) -> io::Result<PathBuf> {
+    let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    set_in_edgeless_dir_with_options(
+        &bootdisk.mount_point.join("Edgeless"),
+        &bootdisk.version,
+        key,
+        value,
+        options,
+    )
+}
+
 fn set_in_edgeless_dir(
     edgeless_dir: &Path,
     version: &str,
     key: &str,
     value: &str,
 ) -> io::Result<PathBuf> {
+    set_in_edgeless_dir_with_options(edgeless_dir, version, key, value, SetOptions::default())
+}
+
+fn set_in_edgeless_dir_with_options(
+    edgeless_dir: &Path,
+    version: &str,
+    key: &str,
+    value: &str,
+    options: SetOptions,
+) -> io::Result<PathBuf> {
+    if options.skip_resolution_validation && !key.eq_ignore_ascii_case("resolution") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--skip-resolution-validation can only be used with config key resolution",
+        ));
+    }
     let config_dir = edgeless_dir.join("Config");
     if let Some(config) = boolean_config(key) {
         let version = parse_bootdisk_version(version)?;
@@ -54,12 +94,26 @@ fn set_in_edgeless_dir(
         return set_wallpaper(edgeless_dir, Path::new(value));
     }
     if key.eq_ignore_ascii_case("resolution") {
-        validate_resolution(value)?;
+        if value.eq_ignore_ascii_case("auto") {
+            let path = config_dir.join("分辨率.txt");
+            remove_optional_file(&path)?;
+            return Ok(path);
+        }
+        if options.skip_resolution_validation {
+            validate_resolution_format(value)?;
+        } else {
+            validate_resolution(value)?;
+        }
         let path = config_dir.join("分辨率.txt");
         replace_file(&path, value.as_bytes())?;
         return Ok(path);
     }
     if key.eq_ignore_ascii_case("homepage") {
+        if value.eq_ignore_ascii_case("false") {
+            let path = config_dir.join("HomePage.txt");
+            remove_optional_file(&path)?;
+            return Ok(path);
+        }
         let version = parse_bootdisk_version(version)?;
         if version <= HOMEPAGE_HIGHER_THAN {
             return Err(unavailable(
@@ -126,54 +180,71 @@ fn validate_resolution(value: &str) -> io::Result<()> {
     if value == "DisableAutoSuit" {
         return Ok(());
     }
-    let fields = value.split_whitespace().collect::<Vec<_>>();
-    if fields.len() != 4 {
-        return Err(invalid_resolution());
-    }
-    let width = fields[0]
-        .strip_prefix('w')
-        .and_then(|number| number.parse::<u16>().ok());
-    let height = fields[1]
-        .strip_prefix('h')
-        .and_then(|number| number.parse::<u16>().ok());
-    let bit = fields[2]
-        .strip_prefix('b')
-        .and_then(|number| number.parse::<u8>().ok());
-    let fps = fields[3]
-        .strip_prefix('f')
-        .and_then(|number| number.parse::<u8>().ok());
+    let (width, height, bit, fps) = parse_resolution_format(value)?;
     let valid_size = matches!(
-        width.zip(height),
-        Some(
-            (1920, 1080)
-                | (1680, 1050)
-                | (1600, 900)
-                | (1440, 900)
-                | (1400, 1050)
-                | (1366, 768)
-                | (1360, 768)
-                | (1280, 1024)
-                | (1280, 960)
-                | (1280, 800)
-                | (1280, 768)
-                | (1280, 720)
-                | (1280, 600)
-                | (1152, 864)
-                | (1024, 768)
-                | (800, 600)
-        )
+        (width, height),
+        (1920, 1080)
+            | (1680, 1050)
+            | (1600, 900)
+            | (1440, 900)
+            | (1400, 1050)
+            | (1366, 768)
+            | (1360, 768)
+            | (1280, 1024)
+            | (1280, 960)
+            | (1280, 800)
+            | (1280, 768)
+            | (1280, 720)
+            | (1280, 600)
+            | (1152, 864)
+            | (1024, 768)
+            | (800, 600)
     );
-    if valid_size && matches!(bit, Some(16 | 32)) && matches!(fps, Some(30 | 60)) {
+    if valid_size && matches!(bit, 16 | 32) && matches!(fps, 30 | 60) {
         Ok(())
     } else {
         Err(invalid_resolution())
     }
 }
 
+/// 解析自定义分辨率的基础格式，不限制具体可用的尺寸、色位或刷新率。
+fn parse_resolution_format(value: &str) -> io::Result<(u16, u16, u16, u16)> {
+    let fields = value.split_whitespace().collect::<Vec<_>>();
+    let [width, height, bit, fps] = fields.as_slice() else {
+        return Err(invalid_resolution_format());
+    };
+    let parse_field = |field: &str, prefix: char| {
+        field
+            .strip_prefix(prefix)
+            .and_then(|number| number.parse::<u16>().ok())
+            .filter(|number| *number > 0)
+    };
+    match (
+        parse_field(width, 'w'),
+        parse_field(height, 'h'),
+        parse_field(bit, 'b'),
+        parse_field(fps, 'f'),
+    ) {
+        (Some(width), Some(height), Some(bit), Some(fps)) => Ok((width, height, bit, fps)),
+        _ => Err(invalid_resolution_format()),
+    }
+}
+
+fn validate_resolution_format(value: &str) -> io::Result<()> {
+    parse_resolution_format(value).map(|_| ())
+}
+
 fn invalid_resolution() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         "resolution must be DisableAutoSuit or `w<width> h<height> b<16|32> f<30|60>` using a supported resolution",
+    )
+}
+
+fn invalid_resolution_format() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "resolution must use the format `w<width> h<height> b<bit> f<fps>` with positive integer values",
     )
 }
 
@@ -201,6 +272,15 @@ fn invalid_homepage() -> io::Error {
         io::ErrorKind::InvalidInput,
         "homepage must be Disable or a valid HTTP(S) URL",
     )
+}
+
+/// 删除可选配置文件；不存在时视为已经处于默认状态。
+fn remove_optional_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn copy_jpeg_atomically(source: &Path, destination: &Path) -> io::Result<()> {
@@ -387,6 +467,65 @@ mod tests {
             normalize_homepage("http://foo_bar.example.com").unwrap(),
             "http://foo_bar.example.com"
         );
+    }
+
+    #[test]
+    fn restores_default_homepage_and_resolution_by_removing_their_files() {
+        let root = test_root();
+        let config = root.join("Config");
+        fs::create_dir_all(&config).unwrap();
+        let homepage = config.join("HomePage.txt");
+        let resolution = config.join("分辨率.txt");
+        fs::write(&homepage, "http://example.com").unwrap();
+        fs::write(&resolution, "DisableAutoSuit").unwrap();
+
+        set_in_edgeless_dir(&root, "legacy-version", "homepage", "false").unwrap();
+        set_in_edgeless_dir(&root, "legacy-version", "resolution", "auto").unwrap();
+
+        assert!(!homepage.exists());
+        assert!(!resolution.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolution_validation_can_be_explicitly_skipped() {
+        let root = test_root();
+        let path = set_in_edgeless_dir_with_options(
+            &root,
+            "legacy-version",
+            "resolution",
+            "w1080 h1920 b32 f60",
+            SetOptions {
+                skip_resolution_validation: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "w1080 h1920 b32 f60");
+        assert!(
+            set_in_edgeless_dir_with_options(
+                &root,
+                "legacy-version",
+                "homepage",
+                "false",
+                SetOptions {
+                    skip_resolution_validation: true,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            set_in_edgeless_dir_with_options(
+                &root,
+                "legacy-version",
+                "resolution",
+                "w1080 h1920 b32",
+                SetOptions {
+                    skip_resolution_validation: true,
+                },
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

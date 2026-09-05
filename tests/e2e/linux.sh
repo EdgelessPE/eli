@@ -105,8 +105,14 @@ fi
 grep -Fq 'unavailable' "$stderr_path"
 "$eli" --bootdisk "$mount_a" config set resolution 'w1920 h1080 b32 f60' > "$stdout_path" 2> "$stderr_path"
 [[ "$(cat "$mount_a/Edgeless/Config/分辨率.txt")" == 'w1920 h1080 b32 f60' ]]
+"$eli" --bootdisk "$mount_a" config set resolution 'w1080 h1920 b32 f60' --skip-resolution-validation > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Config/分辨率.txt")" == 'w1080 h1920 b32 f60' ]]
 "$eli" --bootdisk "$mount_a" config set homepage example.com > "$stdout_path" 2> "$stderr_path"
 [[ "$(cat "$mount_a/Edgeless/Config/HomePage.txt")" == 'http://example.com' ]]
+"$eli" --bootdisk "$mount_a" config set resolution auto > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Config/分辨率.txt" ]]
+"$eli" --bootdisk "$mount_a" config set homepage false > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Config/HomePage.txt" ]]
 wallpaper_path="$test_root/wallpaper.jpg"
 printf '\xff\xd8\xff\xd9' > "$wallpaper_path"
 "$eli" --bootdisk "$mount_a" config set wallpaper "$wallpaper_path" > "$stdout_path" 2> "$stderr_path"
