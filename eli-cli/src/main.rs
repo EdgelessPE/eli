@@ -2,6 +2,7 @@ mod command;
 
 use clap::{Parser, Subcommand};
 use command::bootdisk::BootdiskCommand;
+use command::config::ConfigCommand;
 use command::plugin::PluginCommand;
 use eli_lib::Ctx;
 use std::path::PathBuf;
@@ -30,6 +31,11 @@ enum Command {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    /// Manage configuration stored on an Edgeless boot disk.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -39,6 +45,7 @@ fn main() -> std::io::Result<()> {
     match cli.command {
         Command::Bootdisk { command } => command::bootdisk::execute(ctx.as_ref(), command),
         Command::Plugin { command } => command::plugin::execute(ctx, command),
+        Command::Config { command } => command::config::execute(ctx.as_ref(), command),
     }
 }
 
@@ -264,6 +271,20 @@ mod tests {
                     command: command::plugin::LocalBoostCommand::Load { path },
                 }
             } if path == Path::new(r"D:\plugin.7zl")
+        ));
+    }
+
+    #[test]
+    fn parses_config_set_with_a_resolution_value() {
+        let cli =
+            Cli::try_parse_from(["eli", "config", "set", "resolution", "w1920 h1080 b32 f60"])
+                .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Set { key, value }
+            } if key == "resolution" && value == "w1920 h1080 b32 f60"
         ));
     }
 }

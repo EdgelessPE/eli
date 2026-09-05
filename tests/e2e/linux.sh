@@ -84,6 +84,34 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+if "$eli" config set DisablePinBrowsers true > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Config modification without an explicit disk unexpectedly succeeded.' >&2
+    exit 1
+fi
+[[ ! -e "$mount_a/Edgeless/Config/DisablePinBrowsers" ]]
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" config set DisablePinBrowsers true > "$stdout_path" 2> "$stderr_path"
+[[ -d "$mount_a/Edgeless/Config/DisablePinBrowsers" ]]
+"$eli" --bootdisk "$mount_a" config list > "$stdout_path" 2> "$stderr_path"
+grep -Eq '^DisablePinBrowsers +true +Yes$' "$stdout_path"
+"$eli" --bootdisk "$mount_a" config set DisablePinBrowsers false > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Config/DisablePinBrowsers" ]]
+
+if "$eli" --bootdisk "$mount_a" config set Developer true > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Version-incompatible config unexpectedly succeeded.' >&2
+    exit 1
+fi
+grep -Fq 'unavailable' "$stderr_path"
+"$eli" --bootdisk "$mount_a" config set resolution 'w1920 h1080 b32 f60' > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Config/分辨率.txt")" == 'w1920 h1080 b32 f60' ]]
+"$eli" --bootdisk "$mount_a" config set homepage example.com > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Config/HomePage.txt")" == 'http://example.com' ]]
+wallpaper_path="$test_root/wallpaper.jpg"
+printf '\xff\xd8\xff\xd9' > "$wallpaper_path"
+"$eli" --bootdisk "$mount_a" config set wallpaper "$wallpaper_path" > "$stdout_path" 2> "$stderr_path"
+cmp "$wallpaper_path" "$mount_a/Edgeless/wp.jpg"
+
 package_path="$test_root/工具箱_1.0.0_Edgeless.7z"
 printf '%s' 'stored-package' > "$package_path"
 if "$eli" plugin store "$package_path" > "$stdout_path" 2> "$stderr_path"; then

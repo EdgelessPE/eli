@@ -962,6 +962,7 @@ dependencies = [
 name = "eli-lib"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "windows-sys 0.61.2",
 ]
 

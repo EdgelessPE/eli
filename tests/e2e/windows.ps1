@@ -138,6 +138,56 @@ try {
         throw "Explicit selection unexpectedly emitted a warning: '$warning'."
     }
 
+    & $eli config set DisablePinBrowsers true 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Config modification without an explicit disk unexpectedly succeeded.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\DisablePinBrowsers')) {
+        throw 'Ambiguous config modification changed a boot disk.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Ambiguous config modification did not suggest --bootdisk.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] config set DisablePinBrowsers true `
+        1> $stdoutPath 2> $stderrPath
+    $markerPath = Join-Path $driveRoots[0] 'Edgeless\Config\DisablePinBrowsers'
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $markerPath)) {
+        throw 'Enabling a boolean config failed.'
+    }
+    & $eli --bootdisk $driveRoots[0] config list 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or -not ((Get-Content -Raw -LiteralPath $stdoutPath) -match 'DisablePinBrowsers\s+true\s+Yes')) {
+        throw 'Config list did not report the enabled boolean config.'
+    }
+    & $eli --bootdisk $driveRoots[0] config set DisablePinBrowsers false `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $markerPath)) {
+        throw 'Disabling a boolean config failed.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] config set Developer true 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('unavailable')) {
+        throw 'Version-incompatible config unexpectedly succeeded.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] config set resolution 'w1920 h1080 b32 f60' `
+        1> $stdoutPath 2> $stderrPath
+    if ((Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\分辨率.txt')) -ne 'w1920 h1080 b32 f60') {
+        throw 'Resolution config was not written.'
+    }
+    & $eli --bootdisk $driveRoots[0] config set homepage example.com 1> $stdoutPath 2> $stderrPath
+    if ((Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\HomePage.txt')) -ne 'http://example.com') {
+        throw 'Homepage config was not normalized and written.'
+    }
+    $wallpaperPath = Join-Path $resolvedTestRoot 'wallpaper.jpg'
+    Set-Content -AsByteStream -NoNewline -LiteralPath $wallpaperPath -Value ([byte[]](0xFF, 0xD8, 0xFF, 0xD9))
+    & $eli --bootdisk $driveRoots[0] config set wallpaper $wallpaperPath 1> $stdoutPath 2> $stderrPath
+    $copiedWallpaperPath = Join-Path $driveRoots[0] 'Edgeless\wp.jpg'
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $copiedWallpaperPath) -or
+            (Get-FileHash -LiteralPath $wallpaperPath).Hash -ne (Get-FileHash -LiteralPath $copiedWallpaperPath).Hash) {
+        throw 'JPEG wallpaper was not copied.'
+    }
+
     $packagePath = Join-Path $resolvedTestRoot '工具箱_1.0.0_Edgeless.7z'
     Set-Content -NoNewline -LiteralPath $packagePath -Value 'stored-package'
     & $eli plugin store $packagePath 1> $stdoutPath 2> $stderrPath
