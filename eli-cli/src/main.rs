@@ -3,6 +3,7 @@ mod command;
 use clap::{Parser, Subcommand};
 use command::bootdisk::BootdiskCommand;
 use command::config::ConfigCommand;
+use command::kernel::KernelCommand;
 use command::plugin::PluginCommand;
 use eli_lib::Ctx;
 use std::path::PathBuf;
@@ -36,6 +37,11 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect Edgeless kernel versions.
+    Kernel {
+        #[command(subcommand)]
+        command: KernelCommand,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -46,12 +52,14 @@ fn main() -> std::io::Result<()> {
         Command::Bootdisk { command } => command::bootdisk::execute(ctx.as_ref(), command),
         Command::Plugin { command } => command::plugin::execute(ctx, command),
         Command::Config { command } => command::config::execute(ctx.as_ref(), command),
+        Command::Kernel { command } => command::kernel::execute(ctx.as_ref(), command),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::kernel::KernelVersionCommand;
     use crate::command::plugin::PluginAttributeArg;
     use std::path::Path;
 
@@ -291,6 +299,24 @@ mod tests {
                     }
             } if key == "resolution" && value == "w1920 h1080 b32 f60"
         ));
+    }
+
+    #[test]
+    fn parses_each_kernel_version_source() {
+        for (source, expected) in [
+            ("current", KernelVersionCommand::Current),
+            ("latest", KernelVersionCommand::Latest),
+            ("bootdisk", KernelVersionCommand::Bootdisk),
+        ] {
+            let cli = Cli::try_parse_from(["eli", "kernel", "version", source]).unwrap();
+
+            assert!(matches!(
+                cli.command,
+                Command::Kernel {
+                    command: KernelCommand::Version { command },
+                } if std::mem::discriminant(&command) == std::mem::discriminant(&expected)
+            ));
+        }
     }
 
     #[test]

@@ -97,6 +97,16 @@ try {
         throw "LocalBoost loading did not report its environment dependency: '$localBoostEnvironmentError'."
     }
 
+    & $eli kernel version current 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Current kernel version unexpectedly accepted WindowsNormal.'
+    }
+    $currentKernelError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($currentKernelError.Contains('WindowsPE') -and
+            $currentKernelError.Contains('WindowsNormal'))) {
+        throw "Current kernel version did not report its environment dependency: '$currentKernelError'."
+    }
+
     & $eli bootdisk list 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Boot-disk listing failed.' }
     $listed = @(Get-Content -LiteralPath $stdoutPath)
@@ -113,6 +123,15 @@ try {
     }
     if (-not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
         throw 'Boot-disk listing unexpectedly emitted an error.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] kernel version bootdisk 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (@(Get-Content -LiteralPath $stdoutPath) -join "`n") -ne
+            (("{0,-$versionWidth}{1}" -f 'Version', 'Release') + "`n" +
+                ("{0,-$versionWidth}{1}" -f '4.1.2', 'Alpha')) -or
+            -not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Boot-disk kernel version did not return the identified selected version.'
     }
 
     & $eli bootdisk get 1> $stdoutPath 2> $stderrPath

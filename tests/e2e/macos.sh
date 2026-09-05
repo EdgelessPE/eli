@@ -75,6 +75,13 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'MacOS' "$stderr_path"
 
+if "$eli" kernel version current > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Current kernel version unexpectedly accepted macOS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'MacOS' "$stderr_path"
+
 "$eli" bootdisk list > "$stdout_path" 2> "$stderr_path"
 bootdisk_header='Bootdisk'
 version_header='Version'
@@ -86,6 +93,13 @@ printf -v expected_beta '%-*s%-*s%s' "$bootdisk_width" "$mount_z" "$version_widt
 grep -Fqx "$expected_header" "$stdout_path"
 grep -Fqx "$expected_alpha" "$stdout_path"
 grep -Fqx "$expected_beta" "$stdout_path"
+[[ ! -s "$stderr_path" ]]
+
+"$eli" --bootdisk "$mount_a" kernel version bootdisk > "$stdout_path" 2> "$stderr_path"
+printf -v expected_kernel_header '%-*s%s' "$version_width" 'Version' 'Release'
+printf -v expected_kernel_version '%-*s%s' "$version_width" '4.1.2' 'Alpha'
+grep -Fqx "$expected_kernel_header" "$stdout_path"
+grep -Fqx "$expected_kernel_version" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
 "$eli" bootdisk get > "$stdout_path" 2> "$stderr_path"

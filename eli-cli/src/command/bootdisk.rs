@@ -51,7 +51,7 @@ fn get(ctx: &Ctx) -> io::Result<()> {
     Ok(())
 }
 
-fn format_release(identifier: EdgelessVersionIdentifier) -> String {
+pub(crate) fn format_release(identifier: EdgelessVersionIdentifier) -> String {
     let stage = match identifier.stage {
         ReleaseStage::Alpha => "Alpha",
         ReleaseStage::Beta => "Beta",
