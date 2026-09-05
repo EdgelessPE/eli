@@ -10,6 +10,7 @@ const OUTDATED_DIRECTORY: &str = "过期插件包";
 /// 将选中启动盘中的插件包设为冻结属性并移入过期插件包目录。
 pub fn outdate(ctx: &Ctx, name: &OsStr) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    let _write_lock = crate::command::bootdisk::acquire_write_lock(&bootdisk.mount_point)?;
     outdate_in_resource_dir(&package::resource_dir(&bootdisk.mount_point), name)
 }
 

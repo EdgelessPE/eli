@@ -23,6 +23,7 @@ pub struct SetOptions {
 /// 设置配置项并返回被修改的目标路径。
 pub fn set(ctx: &Ctx, key: &str, value: &str) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    let _write_lock = crate::command::bootdisk::acquire_write_lock(&bootdisk.mount_point)?;
     set_in_edgeless_dir(
         &bootdisk.mount_point.join("Edgeless"),
         &bootdisk.version,
@@ -39,6 +40,7 @@ pub fn set_with_options(
     options: SetOptions,
 ) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    let _write_lock = crate::command::bootdisk::acquire_write_lock(&bootdisk.mount_point)?;
     set_in_edgeless_dir_with_options(
         &bootdisk.mount_point.join("Edgeless"),
         &bootdisk.version,

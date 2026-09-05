@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// `name` 可以是完整文件名，也可以是文件主名。
 pub fn delete(ctx: &Ctx, name: &OsStr) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    let _write_lock = crate::command::bootdisk::acquire_write_lock(&bootdisk.mount_point)?;
     delete_from_resource_dir(&package::resource_dir(&bootdisk.mount_point), name)
 }
 

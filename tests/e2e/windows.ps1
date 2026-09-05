@@ -165,6 +165,31 @@ try {
         throw "Explicit selection unexpectedly emitted a warning: '$warning'."
     }
 
+    $kernelWimPath = Join-Path $resolvedTestRoot 'kernel-local.wim'
+    [System.IO.File]::WriteAllBytes(
+        $kernelWimPath,
+        [byte[]](0x4d, 0x53, 0x57, 0x49, 0x4d, 0, 0, 0, 0x6b, 0x65, 0x72, 0x6e, 0x65, 0x6c)
+    )
+    & $eli kernel store $kernelWimPath --name 'Edgeless_Beta_Ofial_4.1.0_2.wim' `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Ambiguous kernel storage unexpectedly succeeded.'
+    }
+    $kernelDestination = Join-Path $driveRoots[0] 'kernel-local.wim'
+    if (Test-Path -LiteralPath $kernelDestination) {
+        throw 'Ambiguous kernel storage changed a boot disk.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Ambiguous kernel storage did not suggest --bootdisk.'
+    }
+    & $eli --bootdisk $driveRoots[0] kernel store $kernelWimPath `
+        --name 'Edgeless_Beta_Ofial_4.1.0_2.wim' 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($kernelWimPath)) -ne
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($kernelDestination))) {
+        throw 'Kernel WIM storage did not preserve the source content.'
+    }
+
     & $eli config set DisablePinBrowsers true 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'Config modification without an explicit disk unexpectedly succeeded.'

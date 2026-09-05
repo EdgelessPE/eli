@@ -4,7 +4,7 @@ mod list;
 pub use get::get;
 pub use list::list;
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,103 @@ pub enum BootDiskSelectionSource {
     Explicit,
     /// 库从发现的候选启动盘中自动选择。
     Automatic,
+}
+
+/// 启动盘内容写入的跨进程互斥锁。
+///
+/// 所有会修改所选启动盘的命令都必须持有此锁，避免内核、配置和插件操作互相覆盖。
+pub struct WriteLock {
+    _file: File,
+}
+
+/// 获取所选启动盘的独占写入锁。
+pub fn acquire_write_lock(mount_point: &Path) -> io::Result<WriteLock> {
+    use fs2::FileExt;
+
+    let path = bootdisk_lock_path(mount_point)?;
+    let parent = path.parent().expect("lock file always has a parent");
+    fs::create_dir_all(parent)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    file.lock_exclusive().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to lock boot disk writes on {}: {error}",
+                mount_point.display()
+            ),
+        )
+    })?;
+    Ok(WriteLock { _file: file })
+}
+
+/// 返回用户状态目录中与启动盘一一对应的稳定锁文件路径。
+fn bootdisk_lock_path(mount_point: &Path) -> io::Result<PathBuf> {
+    let normalized = fs::canonicalize(mount_point).unwrap_or_else(|_| mount_point.to_owned());
+    let identity = normalized.to_string_lossy();
+    let identity = if cfg!(windows) {
+        identity.to_ascii_lowercase()
+    } else {
+        identity.into_owned()
+    };
+    Ok(eli_state_dir()?
+        .join("locks")
+        .join(format!("bootdisk-{:016x}.lock", stable_hash(&identity))))
+}
+
+fn stable_hash(value: &str) -> u64 {
+    value.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+#[cfg(windows)]
+fn eli_state_dir() -> io::Result<PathBuf> {
+    let local_data = std::env::var_os("LOCALAPPDATA").or_else(|| {
+        std::env::var_os("USERPROFILE").map(|home| {
+            PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .into_os_string()
+        })
+    });
+    local_data
+        .map(PathBuf::from)
+        .map(|path| path.join("Edgeless").join("eli"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not available"))
+}
+
+#[cfg(target_os = "linux")]
+fn eli_state_dir() -> io::Result<PathBuf> {
+    let state_home = std::env::var_os("XDG_STATE_HOME").or_else(|| {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .into_os_string()
+        })
+    });
+    state_home
+        .map(PathBuf::from)
+        .map(|path| path.join("Edgeless").join("eli"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not available"))
+}
+
+#[cfg(target_os = "macos")]
+fn eli_state_dir() -> io::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| {
+            path.join("Library")
+                .join("Application Support")
+                .join("Edgeless")
+                .join("eli")
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not available"))
 }
 
 /// Edgeless 启动盘的选择结果。
@@ -212,6 +309,19 @@ mod tests {
                 PathBuf::from("U:")
             );
         }
+    }
+
+    #[test]
+    fn stores_bootdisk_locks_outside_the_bootdisk_root() {
+        let mount_point = Path::new("eli-lock-path-test");
+        let path = bootdisk_lock_path(mount_point).unwrap();
+
+        assert_ne!(path.parent(), mount_point.parent());
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("bootdisk-") && name.ends_with(".lock"))
+        );
     }
 
     #[test]

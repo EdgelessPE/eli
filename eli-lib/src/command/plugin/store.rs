@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 /// 将插件包复制到选中的启动盘。
 pub fn store(ctx: &Ctx, source: &Path) -> io::Result<PathBuf> {
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
+    let _write_lock = crate::command::bootdisk::acquire_write_lock(&bootdisk.mount_point)?;
     store_in_resource_dir(&package::resource_dir(&bootdisk.mount_point), source)
 }
 

@@ -104,6 +104,17 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+kernel_wim="$test_root/kernel-local.wim"
+printf 'MSWIM\0\0\0kernel payload' > "$kernel_wim"
+if "$eli" kernel store "$kernel_wim" --name 'Edgeless_Beta_Ofial_4.1.0_2.wim' > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Ambiguous kernel storage unexpectedly succeeded.' >&2
+    exit 1
+fi
+[[ ! -e "$mount_a/kernel-local.wim" ]]
+grep -Fq -- '--bootdisk' "$stderr_path"
+"$eli" --bootdisk "$mount_a" kernel store "$kernel_wim" --name 'Edgeless_Beta_Ofial_4.1.0_2.wim' > "$stdout_path" 2> "$stderr_path"
+cmp -s "$kernel_wim" "$mount_a/kernel-local.wim"
+
 if "$eli" config set DisablePinBrowsers true > "$stdout_path" 2> "$stderr_path"; then
     echo 'Config modification without an explicit disk unexpectedly succeeded.' >&2
     exit 1
