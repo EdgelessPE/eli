@@ -179,7 +179,7 @@ fn store_wim(root: &Path, source: &Path, plan: StorePlan) -> io::Result<StoreRes
     result
 }
 
-fn store_iso(root: &Path, source: &Path, plan: StorePlan) -> io::Result<StoreResult> {
+fn store_iso(root: &Path, source: &Path, _plan: StorePlan) -> io::Result<StoreResult> {
     let mut iso = File::open(source)?;
     let tree = parse_edgeless_iso(&mut iso, source)?;
     let (edgeless, boot_wim) = required_iso_content(&tree)?;
@@ -196,15 +196,6 @@ fn store_iso(root: &Path, source: &Path, plan: StorePlan) -> io::Result<StoreRes
         extract_file(&mut iso, boot_wim, &staged_wim, &progress)?;
         validate_wim_header(&staged_wim)?;
         let stored_version = read_staged_version(&staged_edgeless.join("version.txt"))?;
-        if stored_version != plan.version {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "ISO Edgeless/version.txt identifies {stored_version}, but release name identifies {}",
-                    plan.version
-                ),
-            ));
-        }
 
         let destination = root.join(wim_name(source)?);
         publish(
@@ -218,7 +209,7 @@ fn store_iso(root: &Path, source: &Path, plan: StorePlan) -> io::Result<StoreRes
         Ok(StoreResult {
             wim_path: destination,
             updated_edgeless: true,
-            version: plan.version,
+            version: stored_version,
         })
     })();
     staging.cleanup();
@@ -491,7 +482,7 @@ fn copy_file_with_progress(
         .create_new(true)
         .write(true)
         .open(destination)?;
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
         let count = input.read(&mut buffer)?;
         if count == 0 {
@@ -875,7 +866,7 @@ fn recover_interrupted_publish(root: &Path) -> io::Result<()> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if !name.to_string_lossy().starts_with(".eli-kernel-store-") {
+        if !is_staging_directory_name(&name) {
             continue;
         }
         let staging = entry.path();
@@ -885,6 +876,7 @@ fn recover_interrupted_publish(root: &Path) -> io::Result<()> {
         }
         let journal_path = staging.join("transaction.jsonl");
         if !journal_path.is_file() {
+            fs::remove_dir_all(&staging)?;
             continue;
         }
         let (changes, committed) = read_transaction_journal(&journal_path)?;
@@ -894,6 +886,21 @@ fn recover_interrupted_publish(root: &Path) -> io::Result<()> {
         fs::remove_dir_all(&staging)?;
     }
     Ok(())
+}
+
+fn is_staging_directory_name(name: &OsStr) -> bool {
+    let value = name.to_string_lossy();
+    let Some(suffix) = value.strip_prefix(".eli-kernel-store-") else {
+        return false;
+    };
+    let mut fields = suffix.split('-');
+    matches!(
+        (fields.next(), fields.next(), fields.next(), fields.next()),
+        (Some(process), Some(nonce), Some(sequence), None)
+            if process.parse::<u32>().is_ok()
+                && nonce.parse::<u128>().is_ok()
+                && sequence.parse::<u64>().is_ok()
+    )
 }
 
 fn read_transaction_journal(path: &Path) -> io::Result<(Vec<JournalChange>, bool)> {
@@ -1144,14 +1151,9 @@ mod tests {
         let root = test_root();
         fs::create_dir_all(root.join("Edgeless")).unwrap();
         let source = root.join("source.wim");
-        fs::write(
-            &source,
-            WIM_MAGIC
-                .into_iter()
-                .chain(b"payload".iter().copied())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
+        let mut contents = WIM_MAGIC.to_vec();
+        contents.resize(WIM_MAGIC.len() + 1024 * 1024 + 1, b'x');
+        fs::write(&source, &contents).unwrap();
         let plan = StorePlan {
             kind: InputKind::Wim,
             version: EdgelessVersionIdentifier::parse("Edgeless_Beta_Ofial_4.1.0_2").unwrap(),
@@ -1161,6 +1163,7 @@ mod tests {
 
         assert_eq!(fs::read(&source).unwrap()[..8], WIM_MAGIC);
         assert_eq!(fs::read(&result.wim_path).unwrap()[..8], WIM_MAGIC);
+        assert_eq!(fs::read(&result.wim_path).unwrap(), contents);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1176,12 +1179,13 @@ mod tests {
         write_minimal_edgeless_iso(&source);
         let plan = StorePlan {
             kind: InputKind::Iso,
-            version: EdgelessVersionIdentifier::parse("Edgeless_Beta_Ofial_4.1.0_2").unwrap(),
+            version: EdgelessVersionIdentifier::parse("Edgeless_Beta_4.1.0").unwrap(),
         };
 
         let result = store_iso(&root, &source, plan).unwrap();
 
         assert!(result.updated_edgeless);
+        assert_eq!(result.version.to_string(), "Edgeless_Beta_Ofial_4.1.0_2");
         assert_eq!(
             fs::read_to_string(root.join("Edgeless").join("version.txt")).unwrap(),
             "Edgeless_Beta_Ofial_4.1.0_2"
@@ -1289,6 +1293,19 @@ mod tests {
         recover_interrupted_publish(&root).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"old");
+        assert!(!staging.path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removes_an_unpublished_staging_directory_without_a_journal() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let staging = StagingDirectory::new(&root).unwrap();
+        fs::write(staging.path.join("partial.wim"), b"partial").unwrap();
+
+        recover_interrupted_publish(&root).unwrap();
+
         assert!(!staging.path.exists());
         fs::remove_dir_all(root).unwrap();
     }
