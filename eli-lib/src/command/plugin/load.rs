@@ -1496,7 +1496,7 @@ mod tests {
         let observer = Arc::clone(&observed);
 
         let summary = load_with(
-            &[root.clone()],
+            std::slice::from_ref(&root),
             LoadOptions {
                 on_inputs_expanded: Some(Arc::new(move |paths| {
                     *observer.lock().unwrap() = paths;

@@ -8,7 +8,7 @@ use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
@@ -602,10 +602,10 @@ unsafe extern "system" fn titlebar_window_procedure(
     } else {
         unsafe { DefWindowProcW(window_handle, message, wparam, lparam) }
     };
-    if message == WM_NCDESTROY {
-        if let Ok(mut hit_tests) = titlebar_hit_tests().lock() {
-            hit_tests.remove(&key);
-        }
+    if message == WM_NCDESTROY
+        && let Ok(mut hit_tests) = titlebar_hit_tests().lock()
+    {
+        hit_tests.remove(&key);
     }
     result
 }
@@ -770,7 +770,7 @@ fn loading_prompt(package_count: usize) -> String {
     format!("正在加载 {package_count} 个插件包...")
 }
 
-fn file_label(path: &PathBuf) -> String {
+fn file_label(path: &Path) -> String {
     path.file_name()
         .filter(|name| !name.is_empty())
         .unwrap_or(path.as_os_str())
