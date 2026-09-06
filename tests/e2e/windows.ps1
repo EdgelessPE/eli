@@ -142,6 +142,30 @@ try {
         throw 'Boot-disk kernel version did not return the identified selected version.'
     }
 
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $driveRoots[0] 'Edgeless_Alpha_4.1.3.wim'),
+        [byte[]](0x4d, 0x53, 0x57, 0x49, 0x4d, 0, 0, 0, 0x61, 0x6c, 0x70, 0x68, 0x61)
+    )
+    & $eli --bootdisk $driveRoots[0] kernel alpha version bootdisk 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (@(Get-Content -LiteralPath $stdoutPath) -join "`n") -ne
+            (("{0,-$versionWidth}{1}" -f 'Version', 'Release') + "`n" +
+                ("{0,-$versionWidth}{1}" -f '4.1.3', 'Alpha')) -or
+            -not [string]::IsNullOrWhiteSpace((Get-Content -Raw -LiteralPath $stderrPath))) {
+        throw 'Alpha boot-disk kernel version did not return the highest Alpha WIM version.'
+    }
+
+    & $eli kernel alpha version latest 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--token')) {
+        throw 'Alpha latest version did not require a token.'
+    }
+
+    & $eli kernel alpha --token test download 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--directory')) {
+        throw 'Alpha download did not require a directory.'
+    }
+
     & $eli bootdisk get 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) { throw 'Automatic boot-disk selection failed.' }
     $selected = (Get-Content -Raw -LiteralPath $stdoutPath).TrimEnd()

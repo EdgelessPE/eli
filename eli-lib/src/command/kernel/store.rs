@@ -1,3 +1,6 @@
+#[cfg(test)]
+use super::WIM_MAGIC;
+use super::{is_reparse_point, validate_wim_header};
 use crate::Ctx;
 use crate::version_identifier::{EdgelessVersionIdentifier, ReleaseStage};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -11,8 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-const WIM_MAGIC: [u8; 8] = [b'M', b'S', b'W', b'I', b'M', 0, 0, 0];
 
 /// 内核保存命令的执行结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,24 +426,6 @@ fn read_staged_version(path: &Path) -> io::Result<EdgelessVersionIdentifier> {
             ),
         )
     })
-}
-
-fn validate_wim_header(path: &Path) -> io::Result<()> {
-    let mut file = File::open(path)?;
-    let mut header = [0_u8; WIM_MAGIC.len()];
-    file.read_exact(&mut header).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("failed to read WIM header {}: {error}", path.display()),
-        )
-    })?;
-    if header != WIM_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("kernel source is not a WIM file: {}", path.display()),
-        ));
-    }
-    Ok(())
 }
 
 /// WIM 输出名称始终跟随实际输入文件名；`--name` 只参与版本解析。
@@ -1006,20 +989,6 @@ fn safe_journal_path(base: &Path, relative: &Path) -> io::Result<PathBuf> {
         ));
     }
     Ok(base.join(relative))
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 struct StagingDirectory {

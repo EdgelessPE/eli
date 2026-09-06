@@ -59,7 +59,9 @@ fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::kernel::KernelVersionCommand;
+    use crate::command::kernel::{
+        KernelAlphaCommand, KernelAlphaVersionCommand, KernelVersionCommand,
+    };
     use crate::command::plugin::PluginAttributeArg;
     use std::path::Path;
 
@@ -317,6 +319,45 @@ mod tests {
                 } if std::mem::discriminant(&command) == std::mem::discriminant(&expected)
             ));
         }
+    }
+
+    #[test]
+    fn parses_kernel_alpha_commands() {
+        let latest = Cli::try_parse_from([
+            "eli",
+            "kernel",
+            "alpha",
+            "--token",
+            "invite-token",
+            "version",
+            "latest",
+        ])
+        .unwrap();
+        assert!(matches!(
+            latest.command,
+            Command::Kernel {
+                command: KernelCommand::Alpha {
+                    token: Some(_),
+                    command: KernelAlphaCommand::Version {
+                        command: KernelAlphaVersionCommand::Latest,
+                    },
+                },
+            }
+        ));
+
+        let bootdisk =
+            Cli::try_parse_from(["eli", "kernel", "alpha", "version", "bootdisk"]).unwrap();
+        assert!(matches!(
+            bootdisk.command,
+            Command::Kernel {
+                command: KernelCommand::Alpha {
+                    token: None,
+                    command: KernelAlphaCommand::Version {
+                        command: KernelAlphaVersionCommand::Bootdisk,
+                    },
+                },
+            }
+        ));
     }
 
     #[test]

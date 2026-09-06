@@ -96,6 +96,25 @@ grep -Fqx "$expected_kernel_header" "$stdout_path"
 grep -Fqx "$expected_kernel_version" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+printf 'MSWIM\0\0\0alpha payload' > "$mount_a/Edgeless_Alpha_4.1.3.wim"
+"$eli" --bootdisk "$mount_a" kernel alpha version bootdisk > "$stdout_path" 2> "$stderr_path"
+printf -v expected_alpha_kernel_version '%-*s%s' "$version_width" '4.1.3' 'Alpha'
+grep -Fqx "$expected_kernel_header" "$stdout_path"
+grep -Fqx "$expected_alpha_kernel_version" "$stdout_path"
+[[ ! -s "$stderr_path" ]]
+
+if "$eli" kernel alpha version latest > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Alpha latest version unexpectedly accepted a missing token.' >&2
+    exit 1
+fi
+grep -Fq -- '--token' "$stderr_path"
+
+if "$eli" kernel alpha --token test download > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Alpha download unexpectedly accepted a missing directory.' >&2
+    exit 1
+fi
+grep -Fq -- '--directory' "$stderr_path"
+
 "$eli" bootdisk get > "$stdout_path" 2> "$stderr_path"
 grep -Fqx "$device_z" "$stdout_path"
 grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"

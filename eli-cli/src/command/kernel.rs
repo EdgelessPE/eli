@@ -9,6 +9,14 @@ const VERSION_COLUMN_WIDTH: usize = 12;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum KernelCommand {
+    /// Manage Edgeless Alpha kernels.
+    Alpha {
+        /// Invitation token required for Alpha online operations.
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
+        #[command(subcommand)]
+        command: KernelAlphaCommand,
+    },
     /// Download the latest Edgeless kernel ISO.
     Download {
         /// Directory in which to save the downloaded ISO.
@@ -43,8 +51,35 @@ pub(crate) enum KernelVersionCommand {
     Bootdisk,
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum KernelAlphaCommand {
+    /// Download the latest Alpha kernel WIM.
+    Download {
+        /// Directory in which to save the downloaded WIM.
+        #[arg(short, long, value_name = "DIRECTORY")]
+        directory: PathBuf,
+        /// Replace an existing Alpha WIM in the download directory.
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Show an Alpha kernel version from the network or a boot disk.
+    Version {
+        #[command(subcommand)]
+        command: KernelAlphaVersionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum KernelAlphaVersionCommand {
+    /// Show the latest Alpha kernel version available online.
+    Latest,
+    /// Show the latest Alpha kernel version stored on the selected boot disk.
+    Bootdisk,
+}
+
 pub(crate) fn execute(ctx: &Ctx, command: KernelCommand) -> io::Result<()> {
     match command {
+        KernelCommand::Alpha { token, command } => execute_alpha(ctx, token.as_deref(), command),
         KernelCommand::Download { directory, force } => {
             match eli_lib::command::kernel::download(&directory, force)? {
                 DownloadResult::Downloaded(destination) => {
@@ -73,6 +108,47 @@ pub(crate) fn execute(ctx: &Ctx, command: KernelCommand) -> io::Result<()> {
             }
         },
     }
+}
+
+fn execute_alpha(ctx: &Ctx, token: Option<&str>, command: KernelAlphaCommand) -> io::Result<()> {
+    match command {
+        KernelAlphaCommand::Download { directory, force } => {
+            let token = require_alpha_token(token)?;
+            match eli_lib::command::kernel::alpha::download(&directory, force, token)? {
+                eli_lib::command::kernel::alpha::DownloadResult::Downloaded(destination) => {
+                    println!("Downloaded Alpha kernel WIM to {}", destination.display());
+                }
+                eli_lib::command::kernel::alpha::DownloadResult::Skipped(destination) => {
+                    println!(
+                        "Alpha kernel WIM already exists at {}; skipped download",
+                        destination.display()
+                    );
+                }
+            }
+            Ok(())
+        }
+        KernelAlphaCommand::Version { command } => match command {
+            KernelAlphaVersionCommand::Latest => print(eli_lib::command::kernel::alpha::latest(
+                require_alpha_token(token)?,
+            )?),
+            KernelAlphaVersionCommand::Bootdisk => {
+                warn_automatic_bootdisk_selection(ctx.bootdisk()?);
+                print(eli_lib::command::kernel::alpha::bootdisk(ctx)?)
+            }
+        },
+    }
+}
+
+fn require_alpha_token(token: Option<&str>) -> io::Result<&str> {
+    token
+        // 与 Hub 的 JavaScript `String.length` 保持一致，按 UTF-16 码元计数。
+        .filter(|token| (4..=10).contains(&token.encode_utf16().count()))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--token <TOKEN> with 4 to 10 characters is required for Alpha online operations",
+            )
+        })
 }
 
 fn print_store_result(result: StoreResult) {
@@ -117,6 +193,108 @@ mod tests {
     #[test]
     fn keeps_kernel_download_directory_required() {
         assert!(crate::Cli::try_parse_from(["eli", "kernel", "download"]).is_err());
+    }
+
+    #[test]
+    fn parses_alpha_latest_with_a_token() {
+        let cli = crate::Cli::try_parse_from([
+            "eli",
+            "kernel",
+            "alpha",
+            "--token",
+            "invite-token",
+            "version",
+            "latest",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            crate::Command::Kernel {
+                command: KernelCommand::Alpha {
+                    token: Some(token),
+                    command: KernelAlphaCommand::Version {
+                        command: KernelAlphaVersionCommand::Latest,
+                    },
+                },
+            } if token == "invite-token"
+        ));
+    }
+
+    #[test]
+    fn parses_alpha_bootdisk_version_without_a_token() {
+        let cli =
+            crate::Cli::try_parse_from(["eli", "kernel", "alpha", "version", "bootdisk"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            crate::Command::Kernel {
+                command: KernelCommand::Alpha {
+                    token: None,
+                    command: KernelAlphaCommand::Version {
+                        command: KernelAlphaVersionCommand::Bootdisk,
+                    },
+                },
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_alpha_download_with_a_token() {
+        let cli = crate::Cli::try_parse_from([
+            "eli",
+            "kernel",
+            "alpha",
+            "--token",
+            "invite-token",
+            "download",
+            "--directory",
+            "/tmp/alpha",
+            "--force",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            crate::Command::Kernel {
+                command: KernelCommand::Alpha {
+                    command: KernelAlphaCommand::Download {
+                        directory,
+                        force: true,
+                    },
+                    ..
+                },
+            } if directory == std::path::Path::new("/tmp/alpha")
+        ));
+    }
+
+    #[test]
+    fn keeps_alpha_download_directory_required() {
+        assert!(
+            crate::Cli::try_parse_from([
+                "eli",
+                "kernel",
+                "alpha",
+                "--token",
+                "invite-token",
+                "download",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn requires_a_token_for_alpha_online_operations() {
+        let missing = require_alpha_token(None).unwrap_err();
+        let short = require_alpha_token(Some("abc")).unwrap_err();
+        let long = require_alpha_token(Some("abcdefghijk")).unwrap_err();
+        let six_emojis = require_alpha_token(Some("😀😀😀😀😀😀")).unwrap_err();
+
+        assert_eq!(missing.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(short.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(long.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(six_emojis.kind(), io::ErrorKind::InvalidInput);
+        assert!(missing.to_string().contains("--token"));
     }
 
     #[test]
