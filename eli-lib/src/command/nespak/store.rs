@@ -10,8 +10,8 @@ static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// 将指定的 NesPak 必要组件包保存到选中的启动盘。
 ///
 /// 该操作修改启动盘内容，因此仅在候选启动盘唯一或通过 `--bootdisk` 显式指定时
-/// 执行。写入期间持有启动盘跨进程锁，并在目标目录中暂存完整文件后原子替换，
-/// 避免其他 eli 进程读取到不完整的 `Nes_Inport.7z`。
+/// 执行。写入期间持有启动盘跨进程锁，并在目标目录中暂存完整文件后发布；已有
+/// `Nes_Inport.7z` 会保留为同名的 `bak` 文件，避免其他 eli 进程读取到不完整的归档。
 pub fn store(ctx: &Ctx, source: &Path) -> io::Result<PathBuf> {
     validate_source(source)?;
     let bootdisk = ctx.bootdisk_for_destructive_operation()?;
@@ -80,12 +80,66 @@ fn store_at_path(destination: &Path, source: &Path) -> io::Result<PathBuf> {
     let temporary = temporary_path(&destination)?;
     let result = (|| {
         copy_to_new_file(source, &temporary)?;
-        replace_path(&temporary, &destination)
+        publish_staged_archive(&temporary, &destination)
     })();
     if temporary.exists() {
         let _ = fs::remove_file(&temporary);
     }
     result.map(|()| destination)
+}
+
+/// 发布已完整写入暂存文件的归档，并保留上一份归档作为备份。
+fn publish_staged_archive(staged: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NesPak destination is not a regular file: {}",
+                        destination.display()
+                    ),
+                ));
+            }
+
+            let backup = backup_path(destination);
+            match fs::symlink_metadata(&backup) {
+                Ok(metadata) => {
+                    if !metadata.is_file() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("NesPak backup is not a regular file: {}", backup.display()),
+                        ));
+                    }
+                    fs::remove_file(&backup)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+
+            fs::rename(destination, &backup)?;
+            if let Err(error) = fs::rename(staged, destination) {
+                if let Err(restore_error) = fs::rename(&backup, destination) {
+                    return Err(io::Error::other(format!(
+                        "failed to publish NesPak archive {}: {error}; failed to restore backup {}: {restore_error}",
+                        destination.display(),
+                        backup.display()
+                    )));
+                }
+                return Err(error);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(staged, destination),
+        Err(error) => Err(error),
+    }
+}
+
+/// 构造与内核保存逻辑一致的归档备份路径。
+fn backup_path(destination: &Path) -> PathBuf {
+    let mut backup = destination.as_os_str().to_owned();
+    backup.push("bak");
+    PathBuf::from(backup)
 }
 
 fn temporary_path(destination: &Path) -> io::Result<PathBuf> {
@@ -114,42 +168,6 @@ fn copy_to_new_file(source: &Path, destination: &Path) -> io::Result<()> {
     io::copy(&mut input, &mut output)?;
     output.flush()?;
     output.sync_all()
-}
-
-#[cfg(windows)]
-fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_path(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(source, destination)
 }
 
 #[cfg(test)]
@@ -192,17 +210,22 @@ mod tests {
     }
 
     #[test]
-    fn atomically_replaces_an_existing_component_archive() {
+    fn replaces_an_existing_component_archive_and_replaces_its_backup() {
         let root = temporary_directory();
         let source = root.join("NesPak.7z");
         let edgeless_dir = root.join("Edgeless");
         fs::create_dir_all(&edgeless_dir).unwrap();
         fs::write(&source, "new").unwrap();
         fs::write(edgeless_dir.join("Nes_Inport.7z"), "old").unwrap();
+        fs::write(edgeless_dir.join("Nes_Inport.7zbak"), "stale backup").unwrap();
 
         let destination = store_in_edgeless_dir(&edgeless_dir, &source).unwrap();
 
         assert_eq!(fs::read_to_string(destination).unwrap(), "new");
+        assert_eq!(
+            fs::read_to_string(edgeless_dir.join("Nes_Inport.7zbak")).unwrap(),
+            "old"
+        );
         assert!(fs::read_dir(edgeless_dir).unwrap().all(|entry| {
             !entry
                 .unwrap()

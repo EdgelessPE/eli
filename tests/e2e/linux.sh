@@ -59,6 +59,11 @@ grep -Fq -- '--bootdisk' "$stderr_path"
 
 "$eli" --bootdisk "$mount_a" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"
 [[ "$(cat "$mount_a/Edgeless/Nes_Inport.7z")" == 'nespak' ]]
+printf '%s' 'updated nespak' > "$nespak_source"
+printf '%s' 'stale backup' > "$mount_a/Edgeless/Nes_Inport.7zbak"
+"$eli" --bootdisk "$mount_a" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Nes_Inport.7z")" == 'updated nespak' ]]
+[[ "$(cat "$mount_a/Edgeless/Nes_Inport.7zbak")" == 'nespak' ]]
 
 if "$eli" plugin load "$test_root/plugin.7z" > "$stdout_path" 2> "$stderr_path"; then
     echo 'Plugin loading unexpectedly accepted Linux.' >&2

@@ -83,6 +83,16 @@ try {
     if ((Get-Content -Raw -LiteralPath $storedNesPak) -ne 'nespak') {
         throw 'NesPak storage did not write the expected component archive.'
     }
+    Set-Content -NoNewline -Path $nesPakSource -Value 'updated nespak'
+    Set-Content -NoNewline -Path "${storedNesPak}bak" -Value 'stale backup'
+    & $eli --bootdisk $driveRoots[0] nespak store $nesPakSource 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "NesPak replacement storage failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
+    }
+    if ((Get-Content -Raw -LiteralPath $storedNesPak) -ne 'updated nespak' -or
+        (Get-Content -Raw -LiteralPath "${storedNesPak}bak") -ne 'nespak') {
+        throw 'NesPak storage did not preserve the prior archive as its replacement backup.'
+    }
 
     & $eli plugin load (Join-Path $resolvedTestRoot 'plugin.7z') 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
