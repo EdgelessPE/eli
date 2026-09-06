@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use command::bootdisk::BootdiskCommand;
 use command::config::ConfigCommand;
 use command::kernel::KernelCommand;
+use command::nespak::NesPakCommand;
 use command::plugin::PluginCommand;
 use eli_lib::Ctx;
 use std::path::PathBuf;
@@ -42,6 +43,11 @@ enum Command {
         #[command(subcommand)]
         command: KernelCommand,
     },
+    /// Import built-in NesPak resources into the running Edgeless environment.
+    Nespak {
+        #[command(subcommand)]
+        command: NesPakCommand,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -53,6 +59,7 @@ fn main() -> std::io::Result<()> {
         Command::Plugin { command } => command::plugin::execute(ctx, command),
         Command::Config { command } => command::config::execute(ctx.as_ref(), command),
         Command::Kernel { command } => command::kernel::execute(ctx.as_ref(), command),
+        Command::Nespak { command } => command::nespak::execute(ctx.as_ref(), command),
     }
 }
 
@@ -219,6 +226,18 @@ mod tests {
                     localboost: command::plugin::LocalBoostArg::Load,
                 }
             } if paths.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_nespak_load() {
+        let cli = Cli::try_parse_from(["eli", "nespak", "load"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Nespak {
+                command: NesPakCommand::Load
+            }
         ));
     }
 

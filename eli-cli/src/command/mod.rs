@@ -1,6 +1,7 @@
 pub(crate) mod bootdisk;
 pub(crate) mod config;
 pub(crate) mod kernel;
+pub(crate) mod nespak;
 pub(crate) mod plugin;
 
 use eli_lib::command::bootdisk::{BootDiskSelection, BootDiskSelectionSource};

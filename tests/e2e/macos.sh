@@ -75,6 +75,13 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'MacOS' "$stderr_path"
 
+if "$eli" nespak load > "$stdout_path" 2> "$stderr_path"; then
+    echo 'NesPak loading unexpectedly accepted macOS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'MacOS' "$stderr_path"
+
 if "$eli" kernel version current > "$stdout_path" 2> "$stderr_path"; then
     echo 'Current kernel version unexpectedly accepted macOS.' >&2
     exit 1

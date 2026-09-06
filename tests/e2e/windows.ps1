@@ -97,6 +97,16 @@ try {
         throw "LocalBoost loading did not report its environment dependency: '$localBoostEnvironmentError'."
     }
 
+    & $eli nespak load 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'NesPak loading unexpectedly accepted WindowsNormal.'
+    }
+    $nesPakEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($nesPakEnvironmentError.Contains('WindowsPE') -and
+            $nesPakEnvironmentError.Contains('WindowsNormal'))) {
+        throw "NesPak loading did not report its environment dependency: '$nesPakEnvironmentError'."
+    }
+
     & $eli kernel version current 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'Current kernel version unexpectedly accepted WindowsNormal.'
