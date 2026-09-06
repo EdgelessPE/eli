@@ -75,7 +75,7 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'MacOS' "$stderr_path"
 
-if "$eli" nespak load > "$stdout_path" 2> "$stderr_path"; then
+if "$eli" nespak load "$test_root/NesPak.7z" > "$stdout_path" 2> "$stderr_path"; then
     echo 'NesPak loading unexpectedly accepted macOS.' >&2
     exit 1
 fi

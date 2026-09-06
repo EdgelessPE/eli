@@ -97,7 +97,7 @@ try {
         throw "LocalBoost loading did not report its environment dependency: '$localBoostEnvironmentError'."
     }
 
-    & $eli nespak load 1> $stdoutPath 2> $stderrPath
+    & $eli nespak load (Join-Path $resolvedTestRoot 'NesPak.7z') 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'NesPak loading unexpectedly accepted WindowsNormal.'
     }

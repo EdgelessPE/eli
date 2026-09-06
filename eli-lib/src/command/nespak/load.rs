@@ -1,5 +1,4 @@
 use crate::Ctx;
-use crate::command::bootdisk::BootDisk;
 #[cfg(windows)]
 use crate::dependency::ProgramDependency;
 use crate::dependency::RuntimeEnvironment;
@@ -25,14 +24,10 @@ struct LoadPaths {
 }
 
 impl LoadPaths {
-    fn new(bootdisk: &BootDisk, program_files: &Path) -> Self {
+    fn new(archive: &Path, program_files: &Path) -> Self {
         let destination = program_files.join("Edgeless");
         Self {
-            archive: bootdisk
-                .mount_point
-                .join("Edgeless")
-                .join("Nes")
-                .join("_Inport.7z"),
+            archive: archive.to_owned(),
             configuration: destination.join("Nes.ini"),
             destination,
         }
@@ -44,18 +39,18 @@ trait NesPakLoader {
     fn load_configuration(&self, configuration: &Path) -> io::Result<()>;
 }
 
-/// 从选中的启动盘导入并加载 NesPak。
+/// 导入并加载指定的 NesPak 必要组件包。
 ///
 /// 此命令只有一个共享的 PE 运行目录。Windows 实现使用命名互斥锁串行化同一
 /// 机器上来自 eli 的执行；7-Zip 的 `-aos` 同时保证不会覆盖已存在的文件。
-pub fn load(ctx: &Ctx) -> io::Result<LoadStatus> {
+pub fn load(ctx: &Ctx, archive: &Path) -> io::Result<LoadStatus> {
     ctx.dependencies()
         .require_environment(RuntimeEnvironment::WindowsPE)?;
-    load_on_supported_platform(ctx)
+    load_on_supported_platform(ctx, archive)
 }
 
 #[cfg(windows)]
-fn load_on_supported_platform(ctx: &Ctx) -> io::Result<LoadStatus> {
+fn load_on_supported_platform(ctx: &Ctx, archive: &Path) -> io::Result<LoadStatus> {
     use std::env;
 
     let programs = ctx
@@ -67,7 +62,7 @@ fn load_on_supported_platform(ctx: &Ctx) -> io::Result<LoadStatus> {
             "ProgramFiles is not set in the Windows PE environment",
         )
     })?;
-    let paths = LoadPaths::new(&ctx.bootdisk()?.selected, Path::new(&program_files));
+    let paths = LoadPaths::new(archive, Path::new(&program_files));
     let lock = ExecutionLock::new()?;
     let _guard = lock.acquire()?;
     let loader = SystemNesPakLoader {
@@ -78,7 +73,7 @@ fn load_on_supported_platform(ctx: &Ctx) -> io::Result<LoadStatus> {
 }
 
 #[cfg(not(windows))]
-fn load_on_supported_platform(_ctx: &Ctx) -> io::Result<LoadStatus> {
+fn load_on_supported_platform(_ctx: &Ctx, _archive: &Path) -> io::Result<LoadStatus> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "NesPak loading is only implemented for Windows PE",
@@ -240,19 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn derives_paths_from_the_selected_bootdisk_and_program_files() {
-        let bootdisk = BootDisk {
-            partition: PathBuf::from("U:"),
-            mount_point: PathBuf::from("U:\\"),
-            version: "test".to_owned(),
-        };
-
-        let paths = LoadPaths::new(&bootdisk, Path::new("X:\\Program Files"));
-
-        assert_eq!(
-            paths.archive,
-            PathBuf::from("U:\\Edgeless\\Nes\\_Inport.7z")
+    fn derives_paths_from_the_explicit_archive_and_program_files() {
+        let paths = LoadPaths::new(
+            Path::new("U:\\NesPak\\_Inport.7z"),
+            Path::new("X:\\Program Files"),
         );
+
+        assert_eq!(paths.archive, PathBuf::from("U:\\NesPak\\_Inport.7z"));
         assert_eq!(
             paths.destination,
             PathBuf::from("X:\\Program Files\\Edgeless")

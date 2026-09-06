@@ -43,7 +43,7 @@ enum Command {
         #[command(subcommand)]
         command: KernelCommand,
     },
-    /// Import built-in NesPak resources into the running Edgeless environment.
+    /// Import NesPak resources into the running Edgeless environment.
     Nespak {
         #[command(subcommand)]
         command: NesPakCommand,
@@ -230,15 +230,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_nespak_load() {
-        let cli = Cli::try_parse_from(["eli", "nespak", "load"]).unwrap();
+    fn parses_nespak_load_with_a_component_archive() {
+        let cli = Cli::try_parse_from(["eli", "nespak", "load", "NesPak.7z"]).unwrap();
 
         assert!(matches!(
             cli.command,
             Command::Nespak {
-                command: NesPakCommand::Load
-            }
+                command: NesPakCommand::Load { path }
+            } if path == Path::new("NesPak.7z")
         ));
+    }
+
+    #[test]
+    fn requires_a_component_archive_for_nespak_load() {
+        assert!(Cli::try_parse_from(["eli", "nespak", "load"]).is_err());
     }
 
     #[test]
