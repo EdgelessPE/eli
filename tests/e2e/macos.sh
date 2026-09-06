@@ -60,6 +60,17 @@ cargo +stable build --quiet --package eli-cli
 eli="$repo_root/target/debug/eli"
 stdout_path="$test_root/stdout.txt"
 stderr_path="$test_root/stderr.txt"
+nespak_source="$test_root/NesPak.7z"
+printf '%s' 'nespak' > "$nespak_source"
+
+if "$eli" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'NesPak storage unexpectedly selected one of multiple boot disks.' >&2
+    exit 1
+fi
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Nes_Inport.7z")" == 'nespak' ]]
 
 if "$eli" plugin load "$test_root/plugin.7z" > "$stdout_path" 2> "$stderr_path"; then
     echo 'Plugin loading unexpectedly accepted macOS.' >&2

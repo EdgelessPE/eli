@@ -12,6 +12,12 @@ pub(crate) enum NesPakCommand {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
+    /// Store a NesPak component archive on the selected boot disk.
+    Store {
+        /// Path to the NesPak component archive.
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
 }
 
 pub(crate) fn execute(ctx: &Ctx, command: NesPakCommand) -> io::Result<()> {
@@ -29,5 +35,13 @@ pub(crate) fn execute(ctx: &Ctx, command: NesPakCommand) -> io::Result<()> {
                 Ok(())
             }
         },
+        NesPakCommand::Store { path } => {
+            let destination = eli_lib::command::nespak::store(ctx, &path)?;
+            println!(
+                "Stored NesPak component archive at {}",
+                destination.display()
+            );
+            Ok(())
+        }
     }
 }

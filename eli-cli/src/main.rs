@@ -247,6 +247,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_nespak_store_with_a_component_archive() {
+        let cli = Cli::try_parse_from(["eli", "nespak", "store", "NesPak.7z"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Nespak {
+                command: NesPakCommand::Store { path }
+            } if path == Path::new("NesPak.7z")
+        ));
+    }
+
+    #[test]
+    fn requires_a_component_archive_for_nespak_store() {
+        assert!(Cli::try_parse_from(["eli", "nespak", "store"]).is_err());
+    }
+
+    #[test]
     fn plugin_load_defaults_to_two_jobs_and_ignores_localboost() {
         let cli = Cli::try_parse_from(["eli", "plugin", "load", "plugin.7z"]).unwrap();
 

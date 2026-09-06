@@ -64,6 +64,25 @@ try {
     $eli = Join-Path $repoRoot 'target\debug\eli.exe'
     $stdoutPath = Join-Path $resolvedTestRoot 'stdout.txt'
     $stderrPath = Join-Path $resolvedTestRoot 'stderr.txt'
+    $nesPakSource = Join-Path $resolvedTestRoot 'NesPak.7z'
+    Set-Content -NoNewline -Path $nesPakSource -Value 'nespak'
+
+    & $eli nespak store $nesPakSource 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'NesPak storage unexpectedly selected one of multiple boot disks.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'NesPak storage did not require an explicit boot disk selection.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] nespak store $nesPakSource 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "NesPak storage failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
+    }
+    $storedNesPak = Join-Path $driveRoots[0] 'Edgeless\Nes_Inport.7z'
+    if ((Get-Content -Raw -LiteralPath $storedNesPak) -ne 'nespak') {
+        throw 'NesPak storage did not write the expected component archive.'
+    }
 
     & $eli plugin load (Join-Path $resolvedTestRoot 'plugin.7z') 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
