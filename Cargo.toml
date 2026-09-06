@@ -1,3 +1,7 @@
 [workspace]
 members = ["eli-cli", "eli-lib"]
 resolver = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

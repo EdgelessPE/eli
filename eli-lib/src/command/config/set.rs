@@ -2,16 +2,14 @@ use super::{
     HOMEPAGE_HIGHER_THAN, boolean_config, invalid_key, parse_bootdisk_version, unavailable,
 };
 use crate::Ctx;
-use regex::Regex;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use url::Url;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static HOMEPAGE_PATTERN: OnceLock<Regex> = OnceLock::new();
 
 /// 配置写入选项。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -254,16 +252,18 @@ fn normalize_homepage(value: &str) -> io::Result<String> {
     if value == "Disable" {
         return Ok(value.to_owned());
     }
-    let value = if value.starts_with("http") {
+
+    if value.chars().any(char::is_whitespace) {
+        return Err(invalid_homepage());
+    }
+
+    let value = if value.contains("://") {
         value.to_owned()
     } else {
         format!("http://{value}")
     };
-    let pattern = HOMEPAGE_PATTERN.get_or_init(|| {
-        Regex::new(r#"^((https|http|ftp|rtsp|mms)?://)?(([0-9a-z_!~*'().&=+$%-]+: )?[0-9a-z_!~*'().&=+$%-]+@)?(([0-9]{1,3}\.){3}[0-9]{1,3}|([0-9a-z_!~*'()-]+\.)*([0-9a-z][0-9a-z-]{0,61})?[0-9a-z]\.[a-z]{2,6})(:[0-9]{1,4})?((/?)|(/[0-9a-z_!~*'().;?:@&=+$,%#-]+)+/?)$"#)
-            .expect("homepage validation pattern is valid")
-    });
-    if !pattern.is_match(&value) {
+    let parsed = Url::parse(&value).map_err(|_| invalid_homepage())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
         return Err(invalid_homepage());
     }
     Ok(value)
@@ -464,11 +464,17 @@ mod tests {
             "http://example.com/path"
         );
         assert!(normalize_homepage("http://example.com:80:90/path").is_err());
-        assert!(normalize_homepage("http://EXAMPLE.COM").is_err());
+        assert_eq!(
+            normalize_homepage("http://EXAMPLE.COM").unwrap(),
+            "http://EXAMPLE.COM"
+        );
         assert_eq!(
             normalize_homepage("http://foo_bar.example.com").unwrap(),
             "http://foo_bar.example.com"
         );
+        assert!(normalize_homepage("ftp://example.com").is_err());
+        assert!(normalize_homepage("http://example.com/a path").is_err());
+        assert!(normalize_homepage("http://").is_err());
     }
 
     #[test]

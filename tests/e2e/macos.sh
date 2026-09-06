@@ -194,6 +194,13 @@ grep -Fq 'unavailable' "$stderr_path"
 [[ "$(cat "$mount_a/Edgeless/Config/分辨率.txt")" == 'w1080 h1920 b32 f60' ]]
 "$eli" --bootdisk "$mount_a" config set homepage example.com > "$stdout_path" 2> "$stderr_path"
 [[ "$(cat "$mount_a/Edgeless/Config/HomePage.txt")" == 'http://example.com' ]]
+"$eli" --bootdisk "$mount_a" config set homepage 'https://EXAMPLE.technology/path' > "$stdout_path" 2> "$stderr_path"
+[[ "$(cat "$mount_a/Edgeless/Config/HomePage.txt")" == 'https://EXAMPLE.technology/path' ]]
+if "$eli" --bootdisk "$mount_a" config set homepage 'ftp://example.com' > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Unsupported homepage URL unexpectedly succeeded.' >&2
+    exit 1
+fi
+[[ "$(cat "$mount_a/Edgeless/Config/HomePage.txt")" == 'https://EXAMPLE.technology/path' ]]
 "$eli" --bootdisk "$mount_a" config set resolution auto > "$stdout_path" 2> "$stderr_path"
 [[ ! -e "$mount_a/Edgeless/Config/分辨率.txt" ]]
 "$eli" --bootdisk "$mount_a" config set homepage false > "$stdout_path" 2> "$stderr_path"

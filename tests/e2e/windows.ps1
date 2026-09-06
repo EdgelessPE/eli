@@ -300,6 +300,19 @@ try {
     if ((Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\HomePage.txt')) -ne 'http://example.com') {
         throw 'Homepage config was not normalized and written.'
     }
+    & $eli --bootdisk $driveRoots[0] config set homepage 'https://EXAMPLE.technology/path' `
+        1> $stdoutPath 2> $stderrPath
+    $homepagePath = Join-Path $driveRoots[0] 'Edgeless\Config\HomePage.txt'
+    if ($LASTEXITCODE -ne 0 -or
+            (Get-Content -Raw -LiteralPath $homepagePath) -ne 'https://EXAMPLE.technology/path') {
+        throw 'A valid HTTP(S) URL was not preserved and written.'
+    }
+    & $eli --bootdisk $driveRoots[0] config set homepage 'ftp://example.com' `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            (Get-Content -Raw -LiteralPath $homepagePath) -ne 'https://EXAMPLE.technology/path') {
+        throw 'An unsupported homepage URL changed the existing config.'
+    }
     & $eli --bootdisk $driveRoots[0] config set resolution auto 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Config\分辨率.txt'))) {
         throw 'Automatic resolution did not remove the resolution config.'
