@@ -5,6 +5,7 @@ use crate::Ctx;
 #[cfg(windows)]
 use crate::dependency::ProgramDependency;
 use crate::dependency::RuntimeEnvironment;
+#[cfg(any(windows, test))]
 use std::ffi::OsStr;
 #[cfg(any(windows, test))]
 use std::fs;

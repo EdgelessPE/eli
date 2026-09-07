@@ -5,7 +5,9 @@ use crate::dependency::RuntimeEnvironment;
 #[cfg(test)]
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(windows, test))]
+use std::path::PathBuf;
 
 /// NesPak 解压后的处理结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +18,7 @@ pub enum LoadStatus {
     Extracted,
 }
 
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoadPaths {
     archive: PathBuf,
@@ -23,6 +26,7 @@ struct LoadPaths {
     configuration: PathBuf,
 }
 
+#[cfg(any(windows, test))]
 impl LoadPaths {
     fn new(archive: &Path, program_files: &Path) -> Self {
         let destination = program_files.join("Edgeless");
@@ -34,6 +38,7 @@ impl LoadPaths {
     }
 }
 
+#[cfg(any(windows, test))]
 trait NesPakLoader {
     fn extract(&self, archive: &Path, destination: &Path) -> io::Result<()>;
     fn load_configuration(&self, configuration: &Path) -> io::Result<()>;
@@ -80,6 +85,7 @@ fn load_on_supported_platform(_ctx: &Ctx, _archive: &Path) -> io::Result<LoadSta
     ))
 }
 
+#[cfg(any(windows, test))]
 fn load_with(paths: &LoadPaths, loader: &dyn NesPakLoader) -> io::Result<LoadStatus> {
     loader.extract(&paths.archive, &paths.destination)?;
     if paths.configuration.is_file() {
@@ -236,19 +242,15 @@ mod tests {
 
     #[test]
     fn derives_paths_from_the_explicit_archive_and_program_files() {
-        let paths = LoadPaths::new(
-            Path::new("U:\\NesPak\\_Inport.7z"),
-            Path::new("X:\\Program Files"),
-        );
+        let archive = PathBuf::from("source").join("_Inport.7z");
+        let program_files = PathBuf::from("runtime").join("Program Files");
+        let paths = LoadPaths::new(&archive, &program_files);
 
-        assert_eq!(paths.archive, PathBuf::from("U:\\NesPak\\_Inport.7z"));
-        assert_eq!(
-            paths.destination,
-            PathBuf::from("X:\\Program Files\\Edgeless")
-        );
+        assert_eq!(paths.archive, archive);
+        assert_eq!(paths.destination, program_files.join("Edgeless"));
         assert_eq!(
             paths.configuration,
-            PathBuf::from("X:\\Program Files\\Edgeless\\Nes.ini")
+            program_files.join("Edgeless").join("Nes.ini")
         );
     }
 
