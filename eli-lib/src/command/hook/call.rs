@@ -166,7 +166,7 @@ fn call_on_supported_platform(
     hook: HookStage,
     options: CallOptions,
 ) -> io::Result<HookCallSummary> {
-    let scripts = discover_scripts(&options.dictionary, hook.as_os_str())?;
+    let scripts = discover_scripts(&options.dictionary, hook.as_os_str(), options.policy)?;
     if scripts.is_empty() {
         return Ok(HookCallSummary {
             results: Vec::new(),
@@ -227,12 +227,16 @@ fn call_with(
     policy: CallPolicy,
     executor: &dyn ScriptExecutor,
 ) -> io::Result<HookCallSummary> {
-    let scripts = discover_scripts(dictionary, hook)?;
+    let scripts = discover_scripts(dictionary, hook, policy)?;
     call_scripts(scripts, policy, executor)
 }
 
 #[cfg(any(windows, test))]
-fn discover_scripts(dictionary: &Path, hook: &OsStr) -> io::Result<Vec<PathBuf>> {
+fn discover_scripts(
+    dictionary: &Path,
+    hook: &OsStr,
+    policy: CallPolicy,
+) -> io::Result<Vec<PathBuf>> {
     let hook_directory = dictionary.join(hook);
     let entries = match fs::read_dir(&hook_directory) {
         Ok(entries) => entries,
@@ -257,9 +261,25 @@ fn discover_scripts(dictionary: &Path, hook: &OsStr) -> io::Result<Vec<PathBuf>>
             Err(error) => Some(Err(error)),
         })
         .collect::<io::Result<Vec<_>>>()?;
-    // CMD 与 WCS 具有相同优先级，统一按文件名排序以提供确定性。
-    scripts.sort_by_key(|path| path.file_name().map(|name| name.to_ascii_lowercase()));
+    // 同步执行时预置的下划线脚本必须优先；CMD 与 WCS 仍具有相同优先级。
+    scripts.sort_by(|left, right| {
+        let underscore_order = match policy {
+            CallPolicy::Sync => is_underscore_script(right).cmp(&is_underscore_script(left)),
+            CallPolicy::Async => std::cmp::Ordering::Equal,
+        };
+        underscore_order.then_with(|| {
+            left.file_name()
+                .map(|name| name.to_ascii_lowercase())
+                .cmp(&right.file_name().map(|name| name.to_ascii_lowercase()))
+        })
+    });
     Ok(scripts)
+}
+
+#[cfg(any(windows, test))]
+fn is_underscore_script(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"_"))
 }
 
 #[cfg(any(windows, test))]
@@ -414,6 +434,32 @@ mod tests {
         }
         assert_eq!(executor.completed.load(Ordering::SeqCst), 4);
         assert!(executor.peak.load(Ordering::SeqCst) > 1);
+    }
+
+    #[test]
+    fn sync_prioritizes_underscore_scripts_and_continues_after_failures() {
+        let root = test_root();
+        let hook = root.join("onExit");
+        fs::create_dir_all(&hook).unwrap();
+        for script in ["0.cmd", "_Preset.wcs", "a.cmd", "b.wcs", "c.cmd"] {
+            fs::write(hook.join(script), "").unwrap();
+        }
+        let executor = RecordingExecutor::default();
+
+        let summary = call_with(&root, OsStr::new("onExit"), CallPolicy::Sync, &executor).unwrap();
+
+        assert_eq!(summary.succeeded(), 4);
+        assert_eq!(summary.failed(), 1);
+        let calls = executor.calls.into_inner().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.0.file_name().unwrap())
+                .collect::<Vec<_>>(),
+            ["_Preset.wcs", "0.cmd", "a.cmd", "b.wcs", "c.cmd"]
+        );
+        assert!(calls.iter().all(|call| call.1 == CallPolicy::Sync));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
