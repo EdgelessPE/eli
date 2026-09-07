@@ -3,6 +3,7 @@ mod command;
 use clap::{Parser, Subcommand};
 use command::bootdisk::BootdiskCommand;
 use command::config::ConfigCommand;
+use command::hook::HookCommand;
 use command::kernel::KernelCommand;
 use command::nespak::NesPakCommand;
 use command::plugin::PluginCommand;
@@ -38,6 +39,11 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Manage Edgeless lifecycle hooks.
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Inspect Edgeless kernel versions.
     Kernel {
         #[command(subcommand)]
@@ -58,6 +64,7 @@ fn main() -> std::io::Result<()> {
         Command::Bootdisk { command } => command::bootdisk::execute(ctx.as_ref(), command),
         Command::Plugin { command } => command::plugin::execute(ctx, command),
         Command::Config { command } => command::config::execute(ctx.as_ref(), command),
+        Command::Hook { command } => command::hook::execute(ctx.as_ref(), command),
         Command::Kernel { command } => command::kernel::execute(ctx.as_ref(), command),
         Command::Nespak { command } => command::nespak::execute(ctx.as_ref(), command),
     }
@@ -66,6 +73,7 @@ fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::hook::{HookCommand, HookPolicyArg, HookStageArg};
     use crate::command::kernel::{
         KernelAlphaCommand, KernelAlphaVersionCommand, KernelVersionCommand,
     };
@@ -239,6 +247,92 @@ mod tests {
                 command: NesPakCommand::Load { path }
             } if path == Path::new("NesPak.7z")
         ));
+    }
+
+    #[test]
+    fn parses_hook_call_options() {
+        let cli = Cli::try_parse_from([
+            "eli",
+            "hook",
+            "call",
+            "onBootFinished",
+            "--policy",
+            "async",
+            "--dictionary",
+            r"X:\custom-hooks",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Hook {
+                command: HookCommand::Call {
+                    hook,
+                    policy: HookPolicyArg::Async,
+                    dictionary: Some(dictionary),
+                }
+            } if hook == HookStageArg::OnBootFinished
+                && dictionary == Path::new(r"X:\custom-hooks")
+        ));
+    }
+
+    #[test]
+    fn hook_call_defaults_to_sync_and_the_runtime_dictionary() {
+        let cli = Cli::try_parse_from(["eli", "hook", "call", "onExit"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Hook {
+                command: HookCommand::Call {
+                    policy: HookPolicyArg::Sync,
+                    dictionary: None,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_hook_list_add_and_remove() {
+        assert!(matches!(
+            Cli::try_parse_from(["eli", "hook", "list"])
+                .unwrap()
+                .command,
+            Command::Hook {
+                command: HookCommand::List
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["eli", "hook", "add", "onExit", "save.cmd"])
+                .unwrap()
+                .command,
+            Command::Hook {
+                command: HookCommand::Add { hook, script_path }
+            } if hook == HookStageArg::OnExit && script_path == Path::new("save.cmd")
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["eli", "hook", "remove", "onExit", "save.cmd"])
+                .unwrap()
+                .command,
+            Command::Hook {
+                command: HookCommand::Remove { hook, script }
+            } if hook == HookStageArg::OnExit && script == "save.cmd"
+        ));
+    }
+
+    #[test]
+    fn rejects_undocumented_hook_stages_for_call_add_and_remove() {
+        for arguments in [
+            vec!["eli", "hook", "call", "customStage"],
+            vec!["eli", "hook", "add", "customStage", "save.cmd"],
+            vec!["eli", "hook", "remove", "customStage", "save.cmd"],
+        ] {
+            let error = Cli::try_parse_from(arguments).unwrap_err();
+            let rendered = error.to_string();
+            assert!(rendered.contains("invalid value 'customStage'"));
+            assert!(rendered.contains("onDiskFound"));
+            assert!(rendered.contains("onExit"));
+        }
     }
 
     #[test]

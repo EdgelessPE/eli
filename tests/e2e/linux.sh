@@ -146,6 +146,53 @@ grep -Eq '^warning: found [2-9][0-9]* Edgeless boot disks;' "$stderr_path"
 grep -Fqx "$device_a" "$stdout_path"
 [[ ! -s "$stderr_path" ]]
 
+hook_source="$test_root/save-state.cmd"
+printf '%s' '@echo off' > "$hook_source"
+if "$eli" hook add customStage "$hook_source" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Hook addition unexpectedly accepted an undocumented hook stage.' >&2
+    exit 1
+fi
+grep -Fq "invalid value 'customStage'" "$stderr_path"
+grep -Fq 'onDiskFound' "$stderr_path"
+grep -Fq 'onExit' "$stderr_path"
+
+if "$eli" hook add onExit "$hook_source" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Hook addition unexpectedly selected one of multiple boot disks.' >&2
+    exit 1
+fi
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" hook add onExit "$hook_source" > "$stdout_path" 2> "$stderr_path"
+stored_hook="$mount_a/Edgeless/Hooks/onExit/save-state.cmd"
+cmp -s "$hook_source" "$stored_hook"
+[[ ! -s "$stderr_path" ]]
+mkdir -p "$mount_a/Edgeless/Hooks/customStage"
+printf '%s' '@echo off' > "$mount_a/Edgeless/Hooks/customStage/ignored.cmd"
+
+"$eli" --bootdisk "$mount_a" hook list > "$stdout_path" 2> "$stderr_path"
+grep -Eq '^onExit +save-state\.cmd$' "$stdout_path"
+! grep -Fq 'customStage' "$stdout_path"
+! grep -Fq 'ignored.cmd' "$stdout_path"
+[[ ! -s "$stderr_path" ]]
+
+if "$eli" hook remove onExit save-state.cmd > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Hook removal unexpectedly selected one of multiple boot disks.' >&2
+    exit 1
+fi
+[[ -f "$stored_hook" ]]
+grep -Fq -- '--bootdisk' "$stderr_path"
+
+"$eli" --bootdisk "$mount_a" hook remove onExit save-state.cmd > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$stored_hook" ]]
+[[ ! -s "$stderr_path" ]]
+
+if "$eli" hook call onExit --dictionary "$test_root" --policy async > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Hook calling unexpectedly accepted Linux.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'Linux' "$stderr_path"
+
 kernel_wim="$test_root/kernel-local.wim"
 printf 'MSWIM\0\0\0kernel payload' > "$kernel_wim"
 if "$eli" kernel store "$kernel_wim" --name 'Edgeless_Beta_Ofial_4.1.0_2.wim' > "$stdout_path" 2> "$stderr_path"; then

@@ -172,6 +172,69 @@ try {
         throw 'Boot-disk listing unexpectedly emitted an error.'
     }
 
+    $hookSource = Join-Path $resolvedTestRoot 'save-state.cmd'
+    Set-Content -NoNewline -LiteralPath $hookSource -Value '@echo off'
+    & $eli hook add customStage $hookSource 1> $stdoutPath 2> $stderrPath
+    $invalidHookError = Get-Content -Raw -LiteralPath $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not $invalidHookError.Contains("invalid value 'customStage'") -or
+            -not $invalidHookError.Contains('onDiskFound') -or
+            -not $invalidHookError.Contains('onExit')) {
+        throw 'Hook addition did not reject an undocumented hook stage with the documented choices.'
+    }
+
+    & $eli hook add onExit $hookSource 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Hook addition unexpectedly selected one of multiple boot disks.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Hook addition did not require an explicit boot disk selection.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] hook add onExit $hookSource `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) { throw 'Hook addition failed.' }
+    $storedHook = Join-Path $driveRoots[0] 'Edgeless\Hooks\onExit\save-state.cmd'
+    if ((Get-Content -Raw -LiteralPath $storedHook) -ne '@echo off') {
+        throw 'Hook addition did not preserve the script.'
+    }
+    $undocumentedHookDirectory = Join-Path $driveRoots[0] 'Edgeless\Hooks\customStage'
+    New-Item -ItemType Directory -Force -Path $undocumentedHookDirectory | Out-Null
+    Set-Content -NoNewline -LiteralPath (Join-Path $undocumentedHookDirectory 'ignored.cmd') `
+        -Value '@echo off'
+
+    & $eli --bootdisk $driveRoots[0] hook list 1> $stdoutPath 2> $stderrPath
+    $hookListOutput = Get-Content -Raw -LiteralPath $stdoutPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not [regex]::IsMatch($hookListOutput, '(?m)^onExit +save-state\.cmd\r?$') -or
+            $hookListOutput.Contains('customStage') -or
+            $hookListOutput.Contains('ignored.cmd')) {
+        throw 'Hook listing did not include valid scripts or exposed an undocumented hook stage.'
+    }
+
+    & $eli hook remove onExit save-state.cmd 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or -not (Test-Path -LiteralPath $storedHook)) {
+        throw 'Hook removal unexpectedly selected one of multiple boot disks.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Hook removal did not require an explicit boot disk selection.'
+    }
+
+    & $eli --bootdisk $driveRoots[0] hook remove onExit save-state.cmd `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $storedHook)) {
+        throw 'Hook removal failed.'
+    }
+
+    & $eli hook call onExit --dictionary $resolvedTestRoot --policy async `
+        1> $stdoutPath 2> $stderrPath
+    $hookCallError = Get-Content -Raw -LiteralPath $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not ($hookCallError.Contains('WindowsPE') -and
+                $hookCallError.Contains('WindowsNormal'))) {
+        throw 'Hook call did not reject WindowsNormal before execution.'
+    }
+
     & $eli --bootdisk $driveRoots[0] kernel version bootdisk 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0 -or
             (@(Get-Content -LiteralPath $stdoutPath) -join "`n") -ne
