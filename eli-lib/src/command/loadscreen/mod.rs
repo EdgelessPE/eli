@@ -1,3 +1,6 @@
 mod bake;
 
-pub use bake::{BakeEvent, BakeJobPhase, BakeResult, DEFAULT_SLICES, MAX_SLICES, bake};
+pub use bake::{
+    BakeEvent, BakeJobPhase, BakeResult, DEFAULT_QUALITY, DEFAULT_SLICES, MAX_QUALITY, MAX_SLICES,
+    bake,
+};

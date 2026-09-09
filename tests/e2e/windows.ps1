@@ -80,6 +80,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Loadscreen baking failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
     }
+    if (-not (Get-Content -Raw -LiteralPath $stdoutPath).Contains('quality 90')) {
+        throw 'Loadscreen baking did not use the default WebP quality 90.'
+    }
     $expectedLoadscreenFiles = @(
         'lsbp_0000.webp', 'lsbp_0125.webp', 'lsbp_0250.webp',
         'lsbp_0375.webp', 'lsbp_0500.webp', 'lsbp_0625.webp',
@@ -110,13 +113,14 @@ try {
     }
 
     $singleJobOutput = Join-Path $resolvedTestRoot 'loadscreen-single-job'
-    & $eli loadscreen bake $loadscreenSource -d $singleJobOutput -s 1 -j 1 `
+    & $eli loadscreen bake $loadscreenSource -d $singleJobOutput -s 1 -j 1 -q 75 `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0 -or
             -not (Get-Content -Raw -LiteralPath $stderrPath).Contains(
                 'Baking 2 loadscreen images with 1 job'
-            )) {
-        throw 'Loadscreen baking did not honor an explicit single job.'
+            ) -or
+            -not (Get-Content -Raw -LiteralPath $stdoutPath).Contains('quality 75')) {
+        throw 'Loadscreen baking did not honor explicit job and quality options.'
     }
 
     $concurrentLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-concurrent'

@@ -1,5 +1,7 @@
 use clap::Subcommand;
-use eli_lib::command::loadscreen::{BakeEvent, BakeJobPhase, DEFAULT_SLICES, MAX_SLICES};
+use eli_lib::command::loadscreen::{
+    BakeEvent, BakeJobPhase, DEFAULT_QUALITY, DEFAULT_SLICES, MAX_QUALITY, MAX_SLICES,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal};
@@ -28,6 +30,14 @@ pub(crate) enum LoadscreenCommand {
             value_parser = clap::value_parser!(u16).range(1..=i64::from(MAX_SLICES))
         )]
         slices: u16,
+        /// Lossy WebP quality from 0 (smallest) to 100 (highest quality).
+        #[arg(
+            short = 'q',
+            long,
+            default_value_t = DEFAULT_QUALITY,
+            value_parser = clap::value_parser!(u8).range(0..=i64::from(MAX_QUALITY))
+        )]
+        quality: u8,
         /// Maximum number of image-processing jobs to run concurrently.
         #[arg(short = 'j', long, value_name = "COUNT")]
         jobs: Option<NonZeroUsize>,
@@ -40,19 +50,25 @@ pub(crate) fn execute(command: LoadscreenCommand) -> io::Result<()> {
             image,
             directory,
             slices,
+            quality,
             jobs,
         } => {
             let progress = ProgressDisplay::new();
-            let result =
-                eli_lib::command::loadscreen::bake(&image, &directory, slices, jobs, &|event| {
-                    progress.handle(event)
-                })?;
+            let result = eli_lib::command::loadscreen::bake(
+                &image,
+                &directory,
+                slices,
+                jobs,
+                quality,
+                &|event| progress.handle(event),
+            )?;
             println!(
-                "Baked {} loadscreen images at {} ({}x{}, {} workers, {:.2?})",
+                "Baked {} loadscreen images at {} ({}x{}, quality {}, {} workers, {:.2?})",
                 result.files.len(),
                 result.directory.display(),
                 result.width,
                 result.height,
+                result.quality,
                 result.workers,
                 result.elapsed
             );
@@ -268,6 +284,7 @@ mod tests {
             crate::Command::Loadscreen {
                 command: LoadscreenCommand::Bake {
                     slices: DEFAULT_SLICES,
+                    quality: DEFAULT_QUALITY,
                     jobs: None,
                     ..
                 }
@@ -288,6 +305,8 @@ mod tests {
             "16",
             "-j",
             "3",
+            "-q",
+            "75",
         ])
         .unwrap();
 
@@ -298,6 +317,7 @@ mod tests {
                     image,
                     directory,
                     slices: 16,
+                    quality: 75,
                     jobs: Some(jobs),
                 }
             } if image == std::path::Path::new("wallpaper.webp")
@@ -337,6 +357,38 @@ mod tests {
                 "baked",
                 "--jobs",
                 "0",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_quality_boundaries_and_rejects_values_above_one_hundred() {
+        for value in ["0", "100"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "eli",
+                    "loadscreen",
+                    "bake",
+                    "wallpaper.png",
+                    "-d",
+                    "baked",
+                    "--quality",
+                    value,
+                ])
+                .is_ok()
+            );
+        }
+        assert!(
+            crate::Cli::try_parse_from([
+                "eli",
+                "loadscreen",
+                "bake",
+                "wallpaper.png",
+                "-d",
+                "baked",
+                "--quality",
+                "101",
             ])
             .is_err()
         );

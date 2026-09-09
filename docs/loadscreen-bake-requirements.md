@@ -24,13 +24,12 @@ LoadScreen 是 Edgeless 启动过程中的全屏进度展示能力。它以用�
 - 采集、计算或渲染真实启动进度。
 - 在图片中预先绘制进度文字、进度条或其他界面元素。
 - GIF 或其他动画图片输入。
-- 用户可配置的 WebP 压缩质量。
 - 覆盖非空输出目录的 `--force` 行为。
 
 ## 4. CLI 接口
 
 ```text
-eli loadscreen bake <IMAGE> --directory <DIRECTORY> [--slices <COUNT>] [--jobs <COUNT>]
+eli loadscreen bake <IMAGE> --directory <DIRECTORY> [--slices <COUNT>] [--jobs <COUNT>] [--quality <0..=100>]
 ```
 
 参数定义：
@@ -41,6 +40,7 @@ eli loadscreen bake <IMAGE> --directory <DIRECTORY> [--slices <COUNT>] [--jobs <
 | `--directory <DIRECTORY>`、`-d` | 是 | 无 | 烘焙结果目录 |
 | `--slices <COUNT>`、`-s` | 否 | `8` | 0% 到 100% 之间的切片数量，最终生成 `COUNT + 1` 张图片 |
 | `--jobs <COUNT>`、`-j` | 否 | 逻辑处理器数量 | 并发处理的最大 job 数量，必须大于 0 |
+| `--quality <QUALITY>`、`-q` | 否 | `90` | 有损 WebP 质量，合法范围为 `0..=100` |
 
 `--slices` 的合法范围为 `1..=1000`。上限与 0.1% 精度的文件名标记一致，可保证每个切片具有唯一进度文件名。
 
@@ -48,7 +48,7 @@ eli loadscreen bake <IMAGE> --directory <DIRECTORY> [--slices <COUNT>] [--jobs <
 
 ```text
 eli loadscreen bake wallpaper.jpg -d ./baked
-eli loadscreen bake wallpaper.png --directory ./baked --slices 20 --jobs 4
+eli loadscreen bake wallpaper.png --directory ./baked --slices 20 --jobs 4 --quality 85
 ```
 
 命令成功后应打印输出目录、图片数量、输入分辨率和总耗时。错误信息写入标准错误流，并包含发生错误的源路径或目标路径。
@@ -164,7 +164,9 @@ sigma_delta = sqrt(sigma_target^2 - sigma_current^2)
 
 ## 8. WebP 编码
 
-首版先采用纯 Rust 的无损 WebP 编码，以降低跨平台集成风险并建立正确性、耗时和输出体积基线。
+所有输出使用有损 WebP 编码，默认质量为 `90`。用户可通过 `--quality` / `-q` 指定 `0..=100` 的整数质量；`0` 优先最小体积，`100` 优先最高有损质量。质量 `100` 仍属于有损编码，不表示无损模式。
+
+编码由 `webp` crate 调用 libwebp 完成，并与图像解码依赖一起受 `loadscreen-bake` feature 控制；关闭 feature 时不得编译或链接 libwebp。
 
 验收时必须记录：
 
@@ -172,14 +174,12 @@ sigma_delta = sqrt(sigma_target^2 - sigma_current^2)
 - 4K 默认 9 张图片的总烘焙时间和输出体积。
 - 模糊、编码、文件写入分别占用的时间。
 
-当前产品倾向是在后续版本改为质量 `90` 的有损 WebP。该变更不属于首版范围；评估时应重点比较：
+验收时应重点比较：
 
 - 与无损结果的视觉差异，特别是渐变、文字附近和透明边缘。
 - 总目录体积。
 - 编码耗时。
-- 是否需要引入 `libwebp` 或其他原生依赖，以及它们对三个平台构建的影响。
-
-未来引入有损编码时，默认质量先按 `90` 设计；是否向用户公开 `--quality` 参数需另行决定。
+- libwebp 对 Windows、Linux 和 macOS 构建时间及产物体积的影响。
 
 ## 9. 并发和实时 job 进度
 
@@ -251,14 +251,14 @@ sigma_delta = sqrt(sigma_target^2 - sigma_current^2)
 
 feature 名称固定为 `loadscreen-bake`。
 
-- `eli-lib` 将图像处理 crate 声明为 optional dependency，并由 `loadscreen-bake` 启用。
+- `eli-lib` 将图像处理和 libwebp 编码 crate 声明为 optional dependency，并由 `loadscreen-bake` 启用。
 - `eli-cli` 使用同名 feature 转发到 `eli-lib/loadscreen-bake`。
 - 完整构建默认启用 `loadscreen-bake`。
 - PE 精简构建使用 `--no-default-features`，不编译或链接烘焙实现及其额外图片格式依赖。
 - feature 关闭时，`loadscreen bake` 命令从 CLI 帮助和解析结果中消失，而不是保留一个运行时错误桩。
 - `loadscreen` 未来若增加不依赖图像处理的子命令，只对 `bake` 子命令进行条件编译，不应把整个父命令永久绑定到该 feature。
 
-Windows CLI 现有的 Slint GUI 会间接依赖 `image` 的 JPEG、PNG 能力，因此在当前依赖图中，关闭 `loadscreen-bake` 后仍可能编译基础 `image` crate；但本功能新增的 BMP、ICO、TGA、TIFF、WebP 能力和烘焙代码不会进入精简构建。若未来要求从 PE 构建中彻底移除基础 `image` crate，需要另行将现有 Slint GUI 也置于可关闭的 feature 后。
+Windows CLI 现有的 Slint GUI 会间接依赖 `image` 的 JPEG、PNG 能力，因此在当前依赖图中，关闭 `loadscreen-bake` 后仍可能编译基础 `image` crate；但本功能新增的 BMP、ICO、TGA、TIFF、WebP 能力、`webp` / `libwebp-sys` 编码依赖和烘焙代码不会进入精简构建。若未来要求从 PE 构建中彻底移除基础 `image` crate，需要另行将现有 Slint GUI 也置于可关闭的 feature 后。
 
 预期构建方式：
 
@@ -288,9 +288,10 @@ CLI 只负责参数解析、调用库入口和打印结果。图片校验、切�
 
 ### 13.1 CLI 测试
 
-- 正确解析输入图片、`--directory`、`--slices` 和 `--jobs`。
+- 正确解析输入图片、`--directory`、`--slices`、`--jobs` 和 `--quality`。
 - `--slices` 缺省为 8。
 - `--jobs` 缺省为自动并发，并拒绝 0。
+- `--quality` 缺省为 90，接受 0 和 100，并拒绝大于 100 的值。
 - 拒绝 0 和大于 1000 的切片数。
 - feature 关闭时不存在 `loadscreen bake` 命令。
 
@@ -303,7 +304,7 @@ CLI 只负责参数解析、调用库入口和打印结果。图片校验、切�
 - GIF 输入被明确拒绝，包括单帧 GIF；动画 WebP 和 APNG 同样被拒绝。
 - 输出宽高与应用方向后的输入宽高一致，不发生缩放或裁剪。
 - 所有输出均能作为 WebP 重新解码。
-- `lsbp_1000.webp` 的像素与规范化原图一致。
+- 默认输出包含有损 `VP8 ` 图像数据，并使用质量 90；所有质量档输出均可重新解码。
 - 使用高对比测试图验证清晰度随进度标记单调增加。
 - 透明图片的模糊边缘不存在明显黑边。
 - 非空输出目录不被修改。
@@ -320,7 +321,7 @@ CLI 只负责参数解析、调用库入口和打印结果。图片校验、切�
 在 `tests/e2e/` 的 Windows、Linux 和 macOS 脚本中验证：
 
 - 默认命令生成 9 张 WebP。
-- 显式切片数量和 job 数量生成正确文件名、数量与进度信息。
+- 显式切片数量、job 数量和质量生成正确文件名、数量与结果信息。
 - 输出文件具有有效 WebP 标识。
 - GIF 被拒绝。
 - 非空目录和并发同目录操作不会产生部分结果。
@@ -335,16 +336,15 @@ CI 工作流只负责编排并调用上述脚本，不内嵌具体测试实现�
 - 串行与自动并发的总耗时。
 - 模糊、WebP 编码和写入耗时占比。
 - 峰值内存。
-- 无损输出总大小。
+- 默认质量 90 及边界质量的输出总大小。
 
-自动并发实现必须相对串行基线有可观察收益。如果编码成为主要瓶颈，应优先推进质量 90 的有损 WebP 评估，而不是继续增加模糊线程。
+自动并发实现必须相对串行基线有可观察收益。如果编码成为主要瓶颈，应分别测量模糊和 libwebp 编码耗时，而不是盲目继续增加模糊线程。
 
 ## 14. 后续演进
 
 后续工作按独立需求处理：
 
-1. 评估并引入默认质量 90 的有损 WebP。
-2. 根据基准结果评估按高斯方差递增的渐进模糊。
-3. 定义 `.bin` 容器格式、版本、校验和图片索引。
-4. 实现 LoadScreen 播放器及真实进度到图片标记的选择规则。
-5. 视实际使用需求决定是否公开 `--quality` 或最大模糊强度参数。
+1. 根据基准结果评估按高斯方差递增的渐进模糊。
+2. 定义 `.bin` 容器格式、版本、校验和图片索引。
+3. 实现 LoadScreen 播放器及真实进度到图片标记的选择规则。
+4. 视实际使用需求决定是否公开最大模糊强度参数。

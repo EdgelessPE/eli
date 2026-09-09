@@ -1,7 +1,7 @@
 use fs2::FileExt;
-use image::codecs::webp::{WebPDecoder, WebPEncoder};
+use image::codecs::webp::WebPDecoder;
 use image::imageops::fast_blur;
-use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageFormat, ImageReader, RgbaImage};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -12,8 +12,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use webp::Encoder as WebpEncoder;
 
+pub const DEFAULT_QUALITY: u8 = 90;
 pub const DEFAULT_SLICES: u16 = 8;
+pub const MAX_QUALITY: u8 = 100;
 pub const MAX_SLICES: u16 = 1000;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +67,7 @@ pub struct BakeResult {
     pub width: u32,
     pub height: u32,
     pub workers: usize,
+    pub quality: u8,
     pub elapsed: Duration,
 }
 
@@ -79,9 +83,11 @@ pub fn bake(
     directory: &Path,
     slices: u16,
     jobs: Option<NonZeroUsize>,
+    quality: u8,
     report: &(dyn Fn(BakeEvent) + Sync),
 ) -> io::Result<BakeResult> {
     validate_slices(slices)?;
+    validate_quality(quality)?;
     let source = fs::canonicalize(source).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -141,6 +147,7 @@ pub fn bake(
                         has_transparency,
                         frame,
                         transaction.staging_path(),
+                        quality,
                         report,
                     );
                     match result {
@@ -223,6 +230,7 @@ pub fn bake(
         width,
         height,
         workers,
+        quality,
         elapsed,
     })
 }
@@ -232,6 +240,16 @@ fn validate_slices(slices: u16) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("--slices must be between 1 and {MAX_SLICES}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quality(quality: u8) -> io::Result<()> {
+    if quality > MAX_QUALITY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--quality must be between 0 and {MAX_QUALITY}"),
         ));
     }
     Ok(())
@@ -436,6 +454,7 @@ fn process_frame(
     has_transparency: bool,
     frame: &FrameSpec,
     staging: &Path,
+    quality: u8,
     report: &(dyn Fn(BakeEvent) + Sync),
 ) -> io::Result<()> {
     let image = if frame.sigma <= f32::EPSILON {
@@ -458,7 +477,7 @@ fn process_frame(
     });
     let temporary = staging.join(format!(".{}.tmp", frame.file_name));
     let destination = staging.join(&frame.file_name);
-    let result = encode_webp(image.as_ref(), &temporary).and_then(|()| {
+    let result = encode_webp(image.as_ref(), &temporary, quality).and_then(|()| {
         report(BakeEvent::JobPhase {
             progress_mark: frame.progress_mark,
             phase: BakeJobPhase::Write,
@@ -476,20 +495,15 @@ fn process_frame(
     })
 }
 
-fn encode_webp(image: &RgbaImage, destination: &Path) -> io::Result<()> {
+fn encode_webp(image: &RgbaImage, destination: &Path, quality: u8) -> io::Result<()> {
+    let encoded = WebpEncoder::from_rgba(image.as_raw(), image.width(), image.height())
+        .encode(f32::from(quality));
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)?;
     let mut writer = BufWriter::new(file);
-    WebPEncoder::new_lossless(&mut writer)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|error| io::Error::other(format!("WebP encoding failed: {error}")))?;
+    writer.write_all(&encoded)?;
     writer.flush()?;
     writer.get_ref().sync_all()
 }
@@ -659,6 +673,8 @@ fn create_staging_directory(parent: &Path, file_name: &std::ffi::OsStr) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageEncoder;
+    use image::codecs::webp::WebPEncoder;
     use image::{ImageBuffer, Rgba};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -704,6 +720,41 @@ mod tests {
             validate_slices(MAX_SLICES + 1).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+        assert!(validate_quality(0).is_ok());
+        assert!(validate_quality(MAX_QUALITY).is_ok());
+        assert_eq!(
+            validate_quality(MAX_QUALITY + 1).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn encodes_quality_boundaries_as_decodable_lossy_webp() {
+        let root = temporary_directory();
+        fs::create_dir(&root).unwrap();
+        let image = ImageBuffer::from_fn(16, 16, |x, y| {
+            Rgba([
+                (x * 13) as u8,
+                (y * 11) as u8,
+                ((x + y) * 7) as u8,
+                ((x * 16 + y) % 256) as u8,
+            ])
+        });
+
+        for quality in [0, MAX_QUALITY] {
+            let output = root.join(format!("quality-{quality}.webp"));
+            encode_webp(&image, &output, quality).unwrap();
+            let bytes = fs::read(&output).unwrap();
+            assert!(bytes.windows(4).any(|chunk| chunk == b"VP8 "));
+            let decoded = image::open(output).unwrap().to_rgba8();
+            assert_eq!(decoded.dimensions(), image.dimensions());
+            assert_eq!(
+                decoded.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>(),
+                image.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>()
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -758,26 +809,30 @@ mod tests {
         image.save(&source).unwrap();
         let events = Mutex::new(Vec::new());
 
-        let result = bake(&source, &output, DEFAULT_SLICES, None, &|event| {
-            events
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(event);
-        })
+        let result = bake(
+            &source,
+            &output,
+            DEFAULT_SLICES,
+            None,
+            DEFAULT_QUALITY,
+            &|event| {
+                events
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(event);
+            },
+        )
         .unwrap();
 
         assert_eq!((result.width, result.height), (32, 18));
+        assert_eq!(result.quality, DEFAULT_QUALITY);
         assert_eq!(result.files.len(), 9);
         for path in &result.files {
             let baked = image::open(path).unwrap();
             assert_eq!((baked.width(), baked.height()), (32, 18));
         }
-        assert_eq!(
-            image::open(output.join("lsbp_1000.webp"))
-                .unwrap()
-                .to_rgba8(),
-            image
-        );
+        let clear_frame = fs::read(output.join("lsbp_1000.webp")).unwrap();
+        assert!(clear_frame.windows(4).any(|chunk| chunk == b"VP8 "));
         let events = events.into_inner().unwrap();
         assert!(matches!(
             events.first(),
@@ -814,7 +869,7 @@ mod tests {
             .save(&source)
             .unwrap();
 
-        let error = bake(&source, &output, 1, None, &|_| {}).unwrap_err();
+        let error = bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(output.join("keep.txt")).unwrap(), "keep");
@@ -832,8 +887,8 @@ mod tests {
             .unwrap();
 
         let results = thread::scope(|scope| {
-            let first = scope.spawn(|| bake(&source, &output, 1, None, &|_| {}));
-            let second = scope.spawn(|| bake(&source, &output, 1, None, &|_| {}));
+            let first = scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}));
+            let second = scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}));
             [first.join().unwrap(), second.join().unwrap()]
         });
 
