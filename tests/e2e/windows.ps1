@@ -75,7 +75,7 @@ try {
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
         )
     )
-    & $eli loadscreen bake $loadscreenSource -d $loadscreenOutput -s 8 -j 1 `
+    & $eli loadscreen bake $loadscreenSource -d $loadscreenOutput -s 8 `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) {
         throw "Loadscreen baking failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
@@ -101,9 +101,22 @@ try {
         }
     }
     $loadscreenProgress = Get-Content -Raw -LiteralPath $stderrPath
-    if (-not ($loadscreenProgress.Contains('Baking 9 loadscreen images with 1 job') -and
+    if (-not ([regex]::IsMatch(
+                $loadscreenProgress,
+                'Baking 9 loadscreen images with [1-9][0-9]* jobs?'
+            ) -and
             $loadscreenProgress.Contains('lsbp_1000.webp completed'))) {
         throw "Loadscreen baking did not report job progress: '$loadscreenProgress'."
+    }
+
+    $singleJobOutput = Join-Path $resolvedTestRoot 'loadscreen-single-job'
+    & $eli loadscreen bake $loadscreenSource -d $singleJobOutput -s 1 -j 1 `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains(
+                'Baking 2 loadscreen images with 1 job'
+            )) {
+        throw 'Loadscreen baking did not honor an explicit single job.'
     }
 
     $concurrentLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-concurrent'

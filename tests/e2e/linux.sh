@@ -55,7 +55,7 @@ loadscreen_source="$test_root/loadscreen.png"
 loadscreen_output="$test_root/loadscreen-baked"
 printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' |
     base64 --decode > "$loadscreen_source"
-"$eli" loadscreen bake "$loadscreen_source" -d "$loadscreen_output" -s 8 -j 1 > "$stdout_path" 2> "$stderr_path"
+"$eli" loadscreen bake "$loadscreen_source" -d "$loadscreen_output" -s 8 > "$stdout_path" 2> "$stderr_path"
 expected_loadscreen_files=(
     lsbp_0000.webp lsbp_0125.webp lsbp_0250.webp
     lsbp_0375.webp lsbp_0500.webp lsbp_0625.webp
@@ -68,8 +68,12 @@ for file_name in "${expected_loadscreen_files[@]}"; do
     [[ "$(head -c 4 "$output_file")" == 'RIFF' ]]
     [[ "$(dd if="$output_file" bs=1 skip=8 count=4 2>/dev/null)" == 'WEBP' ]]
 done
-grep -Fq 'Baking 9 loadscreen images with 1 job' "$stderr_path"
+grep -Eq 'Baking 9 loadscreen images with [1-9][0-9]* jobs?' "$stderr_path"
 grep -Fq 'lsbp_1000.webp completed' "$stderr_path"
+
+single_job_output="$test_root/loadscreen-single-job"
+"$eli" loadscreen bake "$loadscreen_source" -d "$single_job_output" -s 1 -j 1 > "$stdout_path" 2> "$stderr_path"
+grep -Fq 'Baking 2 loadscreen images with 1 job' "$stderr_path"
 
 concurrent_loadscreen_output="$test_root/loadscreen-concurrent"
 "$eli" loadscreen bake "$loadscreen_source" -d "$concurrent_loadscreen_output" -s 2 \

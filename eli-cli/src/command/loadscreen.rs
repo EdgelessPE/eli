@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+const MAX_VISIBLE_JOB_BARS: usize = 8;
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum LoadscreenCommand {
     /// Bake a static image into loading-screen WebP frames.
@@ -87,7 +89,7 @@ impl ProgressDisplay {
                 let bar = self.multi.add(ProgressBar::new(total as u64));
                 bar.set_style(
                     ProgressStyle::with_template(
-                        "{prefix:.bold} [{bar:36.cyan/blue}] {pos}/{len} {percent}% {elapsed}",
+                        "{prefix:.bold} [{bar:36.cyan/blue}] {pos}/{len} {percent}% {elapsed} {msg}",
                     )
                     .expect("valid loadscreen progress template")
                     .progress_chars("=>-"),
@@ -102,6 +104,13 @@ impl ProgressDisplay {
                 progress_mark,
                 file_name,
             } => {
+                let mut jobs = self
+                    .jobs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if jobs.len() >= MAX_VISIBLE_JOB_BARS {
+                    return;
+                }
                 let bar = self.multi.add(ProgressBar::new_spinner());
                 bar.set_style(
                     ProgressStyle::with_template("{spinner:.cyan} {prefix:.bold} {msg}")
@@ -110,10 +119,7 @@ impl ProgressDisplay {
                 bar.set_prefix(file_name);
                 bar.set_message("等待");
                 bar.enable_steady_tick(Duration::from_millis(100));
-                self.jobs
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(progress_mark, bar);
+                jobs.insert(progress_mark, bar);
             }
             BakeEvent::JobPhase {
                 progress_mark,
@@ -134,6 +140,7 @@ impl ProgressDisplay {
             }
             BakeEvent::JobFinished {
                 progress_mark,
+                file_name,
                 completed,
                 elapsed,
                 ..
@@ -144,7 +151,7 @@ impl ProgressDisplay {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .remove(&progress_mark)
                 {
-                    bar.finish_with_message(format!("完成 · {:.2?}", elapsed));
+                    bar.finish_and_clear();
                 }
                 if let Some(bar) = self
                     .overall
@@ -152,6 +159,7 @@ impl ProgressDisplay {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .as_ref()
                 {
+                    bar.set_message(completed_job_message(&file_name, elapsed));
                     bar.set_position(bar.position().max(completed as u64));
                 }
             }
@@ -176,7 +184,7 @@ impl ProgressDisplay {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take()
                 {
-                    bar.finish_and_clear();
+                    bar.finish();
                 }
             }
             BakeEvent::Aborted => {
@@ -232,6 +240,10 @@ impl ProgressDisplay {
 
 fn job_label(count: usize) -> &'static str {
     if count == 1 { "job" } else { "jobs" }
+}
+
+fn completed_job_message(file_name: &str, elapsed: Duration) -> String {
+    format!("{file_name} 完成 · {elapsed:.2?}")
 }
 
 #[cfg(test)]
@@ -328,5 +340,43 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn formats_the_latest_completed_job_for_the_overall_progress_line() {
+        assert_eq!(
+            completed_job_message("lsbp_0560.webp", Duration::from_millis(10_550)),
+            "lsbp_0560.webp 完成 · 10.55s"
+        );
+    }
+
+    #[test]
+    fn limits_the_number_of_visible_concurrent_job_bars() {
+        let progress = ProgressDisplay {
+            interactive: true,
+            multi: MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
+            overall: Mutex::new(None),
+            jobs: Mutex::new(HashMap::new()),
+        };
+        progress.handle(BakeEvent::Started {
+            total: MAX_VISIBLE_JOB_BARS + 4,
+            workers: MAX_VISIBLE_JOB_BARS + 4,
+        });
+        for progress_mark in 0..(MAX_VISIBLE_JOB_BARS as u16 + 4) {
+            progress.handle(BakeEvent::JobStarted {
+                progress_mark,
+                file_name: format!("lsbp_{progress_mark:04}.webp"),
+            });
+        }
+
+        assert_eq!(
+            progress
+                .jobs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            MAX_VISIBLE_JOB_BARS
+        );
+        progress.handle(BakeEvent::Aborted);
     }
 }

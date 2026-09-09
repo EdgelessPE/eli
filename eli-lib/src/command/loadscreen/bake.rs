@@ -16,10 +16,6 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_SLICES: u16 = 8;
 pub const MAX_SLICES: u16 = 1000;
 
-const MAX_AUTOMATIC_WORKERS: usize = 4;
-const WORKING_MEMORY_BUDGET: u64 = 512 * 1024 * 1024;
-const ESTIMATED_BYTES_PER_WORKER_PIXEL: u64 = 16;
-
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +96,7 @@ pub fn bake(
     let original = decode_static_image(&source)?;
     let (width, height) = original.dimensions();
     let frames = frame_specs(width, height, slices);
-    let workers = worker_count(width, height, frames.len(), jobs);
+    let workers = worker_count(frames.len(), jobs);
     let started_at = Instant::now();
 
     let mut transaction = OutputTransaction::new(directory, &source)?;
@@ -401,25 +397,10 @@ fn rounded_progress_mark(index: u16, slices: u16) -> u16 {
     ((u32::from(index) * 1000 + u32::from(slices) / 2) / u32::from(slices)) as u16
 }
 
-fn worker_count(
-    width: u32,
-    height: u32,
-    frame_count: usize,
-    requested_jobs: Option<NonZeroUsize>,
-) -> usize {
+fn worker_count(frame_count: usize, requested_jobs: Option<NonZeroUsize>) -> usize {
     let parallelism = thread::available_parallelism().map_or(1, usize::from);
-    let bytes_per_worker = u64::from(width)
-        .saturating_mul(u64::from(height))
-        .saturating_mul(ESTIMATED_BYTES_PER_WORKER_PIXEL)
-        .max(1);
-    let memory_workers = (WORKING_MEMORY_BUDGET / bytes_per_worker).max(1) as usize;
-    let requested_workers = requested_jobs
-        .map(NonZeroUsize::get)
-        .unwrap_or_else(|| parallelism.min(MAX_AUTOMATIC_WORKERS));
-    frame_count
-        .min(requested_workers)
-        .min(memory_workers)
-        .max(1)
+    let workers = requested_jobs.map(NonZeroUsize::get).unwrap_or(parallelism);
+    frame_count.min(workers).max(1)
 }
 
 fn premultiplied_source(original: &RgbaImage) -> Option<RgbaImage> {
@@ -681,6 +662,8 @@ mod tests {
     use image::{ImageBuffer, Rgba};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     #[test]
     fn default_slices_have_the_expected_names_and_linear_sigma() {
         let frames = frame_specs(1920, 1080, DEFAULT_SLICES);
@@ -869,18 +852,19 @@ mod tests {
     }
 
     #[test]
-    fn explicit_jobs_override_the_automatic_worker_limit() {
+    fn explicit_jobs_are_capped_by_the_frame_count() {
         let requested = NonZeroUsize::new(6).unwrap();
 
-        assert_eq!(worker_count(1, 1, 9, Some(requested)), 6);
-        assert_eq!(worker_count(1, 1, 3, Some(requested)), 3);
+        assert_eq!(worker_count(9, Some(requested)), 6);
+        assert_eq!(worker_count(3, Some(requested)), 3);
     }
 
     #[test]
-    fn explicit_jobs_still_respect_the_memory_budget() {
-        let requested = NonZeroUsize::new(8).unwrap();
+    fn automatic_jobs_use_the_logical_processor_count() {
+        let parallelism = thread::available_parallelism().map_or(1, usize::from);
 
-        assert_eq!(worker_count(3840, 2160, 9, Some(requested)), 4);
+        assert_eq!(worker_count(usize::MAX, None), parallelism);
+        assert_eq!(worker_count(1, None), 1);
     }
 
     fn animated_webp() -> Vec<u8> {
@@ -914,12 +898,13 @@ mod tests {
 
     fn temporary_directory() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "eli-loadscreen-bake-{}-{}",
+            "eli-loadscreen-bake-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
     }
 }
