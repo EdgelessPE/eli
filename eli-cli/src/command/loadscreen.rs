@@ -1,6 +1,7 @@
 use clap::Subcommand;
 use eli_lib::command::loadscreen::{
-    BakeEvent, BakeJobPhase, DEFAULT_QUALITY, DEFAULT_SLICES, MAX_QUALITY, MAX_SLICES,
+    BakeEvent, BakeJobPhase, BakePreparationStage, DEFAULT_QUALITY, DEFAULT_SLICES, MAX_QUALITY,
+    MAX_SLICES,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -19,9 +20,9 @@ pub(crate) enum LoadscreenCommand {
         /// Path to the source static image.
         #[arg(value_name = "IMAGE")]
         image: PathBuf,
-        /// Directory to create for the baked images.
-        #[arg(short = 'd', long, value_name = "DIRECTORY")]
-        directory: PathBuf,
+        /// Tar archive to create for the baked images.
+        #[arg(short = 'o', long, value_name = "FILE.tar")]
+        output: PathBuf,
         /// Number of intervals between the blurred and clear frames.
         #[arg(
             short = 's',
@@ -41,6 +42,9 @@ pub(crate) enum LoadscreenCommand {
         /// Maximum number of image-processing jobs to run concurrently.
         #[arg(short = 'j', long, value_name = "COUNT")]
         jobs: Option<NonZeroUsize>,
+        /// Keep images larger than 4096 pixels on their longest edge.
+        #[arg(long)]
+        no_downsample: bool,
     },
 }
 
@@ -48,24 +52,26 @@ pub(crate) fn execute(command: LoadscreenCommand) -> io::Result<()> {
     match command {
         LoadscreenCommand::Bake {
             image,
-            directory,
+            output,
             slices,
             quality,
             jobs,
+            no_downsample,
         } => {
             let progress = ProgressDisplay::new();
             let result = eli_lib::command::loadscreen::bake(
                 &image,
-                &directory,
+                &output,
                 slices,
                 jobs,
                 quality,
+                !no_downsample,
                 &|event| progress.handle(event),
             )?;
             println!(
-                "Baked {} loadscreen images at {} ({}x{}, quality {}, {} workers, {:.2?})",
-                result.files.len(),
-                result.directory.display(),
+                "Baked {} loadscreen images to {} ({}x{}, quality {}, {} workers, {:.2?})",
+                result.entries.len(),
+                result.output.display(),
                 result.width,
                 result.height,
                 result.quality,
@@ -95,12 +101,17 @@ impl ProgressDisplay {
     }
 
     fn handle(&self, event: BakeEvent) {
+        if let BakeEvent::Preparing { stage } = &event {
+            eprintln!("{}", preparation_message(*stage));
+            return;
+        }
         if !self.interactive {
             self.handle_non_interactive(event);
             return;
         }
 
         match event {
+            BakeEvent::Preparing { .. } => unreachable!("preparation events are handled above"),
             BakeEvent::Started { total, workers } => {
                 let bar = self.multi.add(ProgressBar::new(total as u64));
                 bar.set_style(
@@ -262,6 +273,22 @@ fn completed_job_message(file_name: &str, elapsed: Duration) -> String {
     format!("{file_name} 完成 · {elapsed:.2?}")
 }
 
+fn preparation_message(stage: BakePreparationStage) -> String {
+    match stage {
+        BakePreparationStage::DecodeInput => "正在读取并解码输入图片…".to_owned(),
+        BakePreparationStage::Downsample {
+            source_width,
+            source_height,
+            output_width,
+            output_height,
+        } => format!(
+            "输入图片为 {source_width}×{source_height}，正在等比降采样到 {output_width}×{output_height}…"
+        ),
+        BakePreparationStage::PrepareOutput => "正在准备输出文件和临时工作区…".to_owned(),
+        BakePreparationStage::PreparePixels => "正在检查透明度并准备像素缓冲区…".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,8 +301,8 @@ mod tests {
             "loadscreen",
             "bake",
             "wallpaper.png",
-            "--directory",
-            "baked",
+            "--output",
+            "baked.tar",
         ])
         .unwrap();
 
@@ -299,8 +326,8 @@ mod tests {
             "loadscreen",
             "bake",
             "wallpaper.webp",
-            "-d",
-            "baked",
+            "-o",
+            "baked.tar",
             "-s",
             "16",
             "-j",
@@ -315,13 +342,14 @@ mod tests {
             crate::Command::Loadscreen {
                 command: LoadscreenCommand::Bake {
                     image,
-                    directory,
+                    output,
                     slices: 16,
                     quality: 75,
                     jobs: Some(jobs),
+                    no_downsample: false,
                 }
             } if image == std::path::Path::new("wallpaper.webp")
-                && directory == std::path::Path::new("baked")
+                && output == std::path::Path::new("baked.tar")
                 && jobs.get() == 3
         ));
     }
@@ -335,8 +363,8 @@ mod tests {
                     "loadscreen",
                     "bake",
                     "wallpaper.png",
-                    "-d",
-                    "baked",
+                    "-o",
+                    "baked.tar",
                     "--slices",
                     value,
                 ])
@@ -353,8 +381,8 @@ mod tests {
                 "loadscreen",
                 "bake",
                 "wallpaper.png",
-                "-d",
-                "baked",
+                "-o",
+                "baked.tar",
                 "--jobs",
                 "0",
             ])
@@ -371,8 +399,8 @@ mod tests {
                     "loadscreen",
                     "bake",
                     "wallpaper.png",
-                    "-d",
-                    "baked",
+                    "-o",
+                    "baked.tar",
                     "--quality",
                     value,
                 ])
@@ -385,12 +413,53 @@ mod tests {
                 "loadscreen",
                 "bake",
                 "wallpaper.png",
-                "-d",
-                "baked",
+                "-o",
+                "baked.tar",
                 "--quality",
                 "101",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_the_downsample_opt_out() {
+        let cli = crate::Cli::try_parse_from([
+            "eli",
+            "loadscreen",
+            "bake",
+            "wallpaper.png",
+            "-o",
+            "baked.tar",
+            "--no-downsample",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            crate::Command::Loadscreen {
+                command: LoadscreenCommand::Bake {
+                    no_downsample: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn formats_preparation_messages() {
+        assert_eq!(
+            preparation_message(BakePreparationStage::DecodeInput),
+            "正在读取并解码输入图片…"
+        );
+        assert_eq!(
+            preparation_message(BakePreparationStage::Downsample {
+                source_width: 6000,
+                source_height: 4000,
+                output_width: 4096,
+                output_height: 2731,
+            }),
+            "输入图片为 6000×4000，正在等比降采样到 4096×2731…"
         );
     }
 

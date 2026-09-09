@@ -52,36 +52,65 @@ nespak_source="$test_root/NesPak.7z"
 printf '%s' 'nespak' > "$nespak_source"
 
 loadscreen_source="$test_root/loadscreen.png"
-loadscreen_output="$test_root/loadscreen-baked"
+loadscreen_output="$test_root/loadscreen.tar"
+loadscreen_extracted="$test_root/loadscreen-extracted"
 printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' |
     base64 --decode > "$loadscreen_source"
-"$eli" loadscreen bake "$loadscreen_source" -d "$loadscreen_output" -s 8 > "$stdout_path" 2> "$stderr_path"
+"$eli" loadscreen bake "$loadscreen_source" -o "$loadscreen_output" > "$stdout_path" 2> "$stderr_path"
 grep -Fq 'quality 90' "$stdout_path"
 expected_loadscreen_files=(
-    lsbp_0000.webp lsbp_0125.webp lsbp_0250.webp
-    lsbp_0375.webp lsbp_0500.webp lsbp_0625.webp
-    lsbp_0750.webp lsbp_0875.webp lsbp_1000.webp
+    lsbp_0000.webp lsbp_0040.webp lsbp_0080.webp lsbp_0120.webp
+    lsbp_0160.webp lsbp_0200.webp lsbp_0240.webp lsbp_0280.webp
+    lsbp_0320.webp lsbp_0360.webp lsbp_0400.webp lsbp_0440.webp
+    lsbp_0480.webp lsbp_0520.webp lsbp_0560.webp lsbp_0600.webp
+    lsbp_0640.webp lsbp_0680.webp lsbp_0720.webp lsbp_0760.webp
+    lsbp_0800.webp lsbp_0840.webp lsbp_0880.webp lsbp_0920.webp
+    lsbp_0960.webp lsbp_1000.webp
 )
-[[ "$(find "$loadscreen_output" -maxdepth 1 -type f | wc -l)" -eq 9 ]]
+mkdir "$loadscreen_extracted"
+tar -xf "$loadscreen_output" -C "$loadscreen_extracted"
+[[ "$(find "$loadscreen_extracted" -maxdepth 1 -type f | wc -l)" -eq 26 ]]
 for file_name in "${expected_loadscreen_files[@]}"; do
-    output_file="$loadscreen_output/$file_name"
+    output_file="$loadscreen_extracted/$file_name"
     [[ -f "$output_file" ]]
     [[ "$(head -c 4 "$output_file")" == 'RIFF' ]]
     [[ "$(dd if="$output_file" bs=1 skip=8 count=4 2>/dev/null)" == 'WEBP' ]]
 done
-grep -Eq 'Baking 9 loadscreen images with [1-9][0-9]* jobs?' "$stderr_path"
+grep -Eq 'Baking 26 loadscreen images with [1-9][0-9]* jobs?' "$stderr_path"
 grep -Fq 'lsbp_1000.webp completed' "$stderr_path"
+grep -Fq '正在读取并解码输入图片' "$stderr_path"
+grep -Fq '正在准备输出文件和临时工作区' "$stderr_path"
+grep -Fq '正在检查透明度并准备像素缓冲区' "$stderr_path"
+[[ ! -e "$test_root/.loadscreen.tar.eli-loadscreen-bake.lock" ]]
 
-single_job_output="$test_root/loadscreen-single-job"
-"$eli" loadscreen bake "$loadscreen_source" -d "$single_job_output" -s 1 -j 1 -q 75 > "$stdout_path" 2> "$stderr_path"
+single_job_output="$test_root/loadscreen-single-job.tar"
+"$eli" loadscreen bake "$loadscreen_source" -o "$single_job_output" -s 1 -j 1 -q 75 > "$stdout_path" 2> "$stderr_path"
 grep -Fq 'Baking 2 loadscreen images with 1 job' "$stderr_path"
 grep -Fq 'quality 75' "$stdout_path"
 
-concurrent_loadscreen_output="$test_root/loadscreen-concurrent"
-"$eli" loadscreen bake "$loadscreen_source" -d "$concurrent_loadscreen_output" -s 2 \
+large_loadscreen_source="$test_root/loadscreen-large.bmp"
+printf 'BM\x3a\x40\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00\x28\x00\x00\x00\x01\x10\x00\x00\x01\x00\x00\x00\x01\x00\x20\x00\x00\x00\x00\x00\x04\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$large_loadscreen_source"
+dd if=/dev/zero bs=16388 count=1 2>/dev/null >> "$large_loadscreen_source"
+downsampled_output="$test_root/loadscreen-downsampled.tar"
+"$eli" loadscreen bake "$large_loadscreen_source" -o "$downsampled_output" -s 1 -j 1 -q 0 > "$stdout_path" 2> "$stderr_path"
+grep -Fq '(4096x1,' "$stdout_path"
+grep -Fq '4097×1' "$stderr_path"
+grep -Fq '4096×1' "$stderr_path"
+
+original_size_output="$test_root/loadscreen-original-size.tar"
+"$eli" loadscreen bake "$large_loadscreen_source" -o "$original_size_output" -s 1 -j 1 -q 0 \
+    --no-downsample > "$stdout_path" 2> "$stderr_path"
+grep -Fq '(4097x1,' "$stdout_path"
+if grep -Fq '正在等比降采样' "$stderr_path"; then
+    echo 'Loadscreen baking ignored --no-downsample.' >&2
+    exit 1
+fi
+
+concurrent_loadscreen_output="$test_root/loadscreen-concurrent.tar"
+"$eli" loadscreen bake "$loadscreen_source" -o "$concurrent_loadscreen_output" -s 2 \
     > "$test_root/loadscreen-first.stdout" 2> "$test_root/loadscreen-first.stderr" &
 first_bake_pid=$!
-"$eli" loadscreen bake "$loadscreen_source" -d "$concurrent_loadscreen_output" -s 2 \
+"$eli" loadscreen bake "$loadscreen_source" -o "$concurrent_loadscreen_output" -s 2 \
     > "$test_root/loadscreen-second.stdout" 2> "$test_root/loadscreen-second.stderr" &
 second_bake_pid=$!
 successful_bakes=0
@@ -92,17 +121,28 @@ if wait "$second_bake_pid"; then
     ((successful_bakes += 1))
 fi
 [[ "$successful_bakes" -eq 1 ]]
-[[ "$(find "$concurrent_loadscreen_output" -maxdepth 1 -type f | wc -l)" -eq 3 ]]
+concurrent_loadscreen_extracted="$test_root/loadscreen-concurrent-extracted"
+mkdir "$concurrent_loadscreen_extracted"
+tar -xf "$concurrent_loadscreen_output" -C "$concurrent_loadscreen_extracted"
+[[ "$(find "$concurrent_loadscreen_extracted" -maxdepth 1 -type f | wc -l)" -eq 3 ]]
+[[ ! -e "$test_root/.loadscreen-concurrent.tar.eli-loadscreen-bake.lock" ]]
+
+if "$eli" loadscreen bake "$loadscreen_source" -o "$test_root/loadscreen.bin" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Loadscreen baking accepted an output path without a .tar extension.' >&2
+    exit 1
+fi
+grep -Fq '.tar' "$stderr_path"
+[[ ! -e "$test_root/loadscreen.bin" ]]
 
 loadscreen_gif="$test_root/loadscreen.gif"
 printf '%s' 'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' |
     base64 --decode > "$loadscreen_gif"
-if "$eli" loadscreen bake "$loadscreen_gif" -d "$test_root/gif-baked" > "$stdout_path" 2> "$stderr_path"; then
+if "$eli" loadscreen bake "$loadscreen_gif" -o "$test_root/gif-baked.tar" > "$stdout_path" 2> "$stderr_path"; then
     echo 'Loadscreen baking unexpectedly accepted GIF input.' >&2
     exit 1
 fi
 grep -Fq 'GIF images are not supported' "$stderr_path"
-[[ ! -e "$test_root/gif-baked" ]]
+[[ ! -e "$test_root/gif-baked.tar" ]]
 
 if "$eli" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"; then
     echo 'NesPak storage unexpectedly selected one of multiple boot disks.' >&2

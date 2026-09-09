@@ -1,6 +1,6 @@
 use fs2::FileExt;
 use image::codecs::webp::WebPDecoder;
-use image::imageops::fast_blur;
+use image::imageops::{FilterType, fast_blur, resize};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 use std::borrow::Cow;
 use std::ffi::OsString;
@@ -12,10 +12,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use tar::{Builder as TarBuilder, HeaderMode};
 use webp::Encoder as WebpEncoder;
 
 pub const DEFAULT_QUALITY: u8 = 90;
-pub const DEFAULT_SLICES: u16 = 8;
+pub const DEFAULT_SLICES: u16 = 25;
+pub const MAX_OUTPUT_EDGE: u32 = 4096;
 pub const MAX_QUALITY: u8 = 100;
 pub const MAX_SLICES: u16 = 1000;
 
@@ -28,8 +30,24 @@ pub enum BakeJobPhase {
     Write,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BakePreparationStage {
+    DecodeInput,
+    Downsample {
+        source_width: u32,
+        source_height: u32,
+        output_width: u32,
+        output_height: u32,
+    },
+    PrepareOutput,
+    PreparePixels,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BakeEvent {
+    Preparing {
+        stage: BakePreparationStage,
+    },
     Started {
         total: usize,
         workers: usize,
@@ -62,8 +80,8 @@ pub enum BakeEvent {
 
 #[derive(Debug)]
 pub struct BakeResult {
-    pub directory: PathBuf,
-    pub files: Vec<PathBuf>,
+    pub output: PathBuf,
+    pub entries: Vec<String>,
     pub width: u32,
     pub height: u32,
     pub workers: usize,
@@ -80,14 +98,17 @@ struct FrameSpec {
 
 pub fn bake(
     source: &Path,
-    directory: &Path,
+    output: &Path,
     slices: u16,
     jobs: Option<NonZeroUsize>,
     quality: u8,
+    downsample: bool,
     report: &(dyn Fn(BakeEvent) + Sync),
 ) -> io::Result<BakeResult> {
+    let started_at = Instant::now();
     validate_slices(slices)?;
     validate_quality(quality)?;
+    validate_output_path(output)?;
     let source = fs::canonicalize(source).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -99,13 +120,22 @@ pub fn bake(
     })?;
     validate_regular_file(&source)?;
 
+    report(BakeEvent::Preparing {
+        stage: BakePreparationStage::DecodeInput,
+    });
     let original = decode_static_image(&source)?;
+    let original = downsample_image(original, downsample, report);
     let (width, height) = original.dimensions();
     let frames = frame_specs(width, height, slices);
     let workers = worker_count(frames.len(), jobs);
-    let started_at = Instant::now();
 
-    let mut transaction = OutputTransaction::new(directory, &source)?;
+    report(BakeEvent::Preparing {
+        stage: BakePreparationStage::PrepareOutput,
+    });
+    let mut transaction = OutputTransaction::new(output, &source)?;
+    report(BakeEvent::Preparing {
+        stage: BakePreparationStage::PreparePixels,
+    });
     let blur_source = premultiplied_source(&original);
     let blur_source = blur_source.as_ref().unwrap_or(&original);
     let has_transparency = !std::ptr::eq(blur_source, &original);
@@ -212,21 +242,18 @@ pub fn bake(
         )));
     }
 
-    if let Err(error) = transaction.publish() {
+    if let Err(error) = transaction.publish(&frames) {
         report(BakeEvent::Aborted);
         return Err(error);
     }
     let elapsed = started_at.elapsed();
     report(BakeEvent::Finished { elapsed });
-    let directory = transaction.reported_destination().to_owned();
-    let files = frames
-        .iter()
-        .map(|frame| directory.join(&frame.file_name))
-        .collect();
+    let output = transaction.reported_output().to_owned();
+    let entries = frames.iter().map(|frame| frame.file_name.clone()).collect();
 
     Ok(BakeResult {
-        directory,
-        files,
+        output,
+        entries,
         width,
         height,
         workers,
@@ -250,6 +277,23 @@ fn validate_quality(quality: u8) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("--quality must be between 0 and {MAX_QUALITY}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_output_path(output: &Path) -> io::Result<()> {
+    let has_tar_extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"));
+    if !has_tar_extension {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "--output must use a file name with a .tar extension: {}",
+                output.display()
+            ),
         ));
     }
     Ok(())
@@ -303,6 +347,45 @@ fn decode_static_image(source: &Path) -> io::Result<RgbaImage> {
         ));
     }
     Ok(image.to_rgba8())
+}
+
+fn downsample_image(
+    original: RgbaImage,
+    enabled: bool,
+    report: &(dyn Fn(BakeEvent) + Sync),
+) -> RgbaImage {
+    let (source_width, source_height) = original.dimensions();
+    let Some((output_width, output_height)) =
+        downsampled_dimensions(source_width, source_height, enabled)
+    else {
+        return original;
+    };
+    report(BakeEvent::Preparing {
+        stage: BakePreparationStage::Downsample {
+            source_width,
+            source_height,
+            output_width,
+            output_height,
+        },
+    });
+    resize(&original, output_width, output_height, FilterType::Lanczos3)
+}
+
+fn downsampled_dimensions(width: u32, height: u32, enabled: bool) -> Option<(u32, u32)> {
+    let longest_edge = width.max(height);
+    if !enabled || longest_edge <= MAX_OUTPUT_EDGE {
+        return None;
+    }
+    let scaled = |edge: u32| {
+        ((u64::from(edge) * u64::from(MAX_OUTPUT_EDGE) + u64::from(longest_edge) / 2)
+            / u64::from(longest_edge))
+        .max(1) as u32
+    };
+    Some(if width >= height {
+        (MAX_OUTPUT_EDGE, scaled(height))
+    } else {
+        (scaled(width), MAX_OUTPUT_EDGE)
+    })
 }
 
 fn validate_format(source: &Path, format: ImageFormat) -> io::Result<()> {
@@ -509,40 +592,95 @@ fn encode_webp(image: &RgbaImage, destination: &Path, quality: u8) -> io::Result
 }
 
 struct OutputTransaction {
-    destination: PathBuf,
-    reported_destination: PathBuf,
+    output: PathBuf,
+    reported_output: PathBuf,
     staging: PathBuf,
-    _lock: File,
-    published: bool,
+    _lock: OutputLock,
+}
+
+struct OutputLock {
+    file: Option<File>,
+    path: PathBuf,
+}
+
+impl OutputLock {
+    fn acquire(path: PathBuf, output: &Path) -> io::Result<Self> {
+        loop {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    FileExt::lock_exclusive(&file)?;
+                    return Ok(Self {
+                        file: Some(file),
+                        path,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+
+            let file = match OpenOptions::new().read(true).write(true).open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            match FileExt::try_lock_exclusive(&file) {
+                Err(error) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!(
+                            "output file is already being baked {}: {error}",
+                            output.display()
+                        ),
+                    ));
+                }
+                Ok(()) => {
+                    // 已解锁的同名文件来自异常退出或刚结束的任务，先删除再重新原子创建。
+                    let _ = fs::remove_file(&path);
+                    let _ = FileExt::unlock(&file);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for OutputLock {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            // 保持锁直到目录项删除，避免新任务取得即将被删除的旧锁文件。
+            let _ = fs::remove_file(&self.path);
+            let _ = FileExt::unlock(&file);
+            drop(file);
+        }
+    }
 }
 
 impl OutputTransaction {
-    fn new(directory: &Path, source: &Path) -> io::Result<Self> {
-        let reported_destination = if directory.is_absolute() {
-            directory.to_owned()
+    fn new(output: &Path, source: &Path) -> io::Result<Self> {
+        let reported_output = if output.is_absolute() {
+            output.to_owned()
         } else {
-            std::env::current_dir()?.join(directory)
+            std::env::current_dir()?.join(output)
         };
-        let file_name = reported_destination.file_name().ok_or_else(|| {
+        let file_name = reported_output.file_name().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "output directory must name a new directory: {}",
-                    directory.display()
-                ),
+                format!("--output must name a .tar file: {}", output.display()),
             )
         })?;
-        let parent = reported_destination
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let parent = reported_output.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
         let parent = fs::canonicalize(parent)?;
-        let destination = parent.join(file_name);
+        let output = parent.join(file_name);
 
-        if source.starts_with(&destination) {
+        if source == output {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "input image must not be inside the output directory",
+                "input image and output file must be different",
             ));
         }
 
@@ -550,30 +688,15 @@ impl OutputTransaction {
         lock_name.push(file_name);
         lock_name.push(".eli-loadscreen-bake.lock");
         let lock_path = parent.join(lock_name);
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        FileExt::lock_exclusive(&lock).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "failed to lock output directory {}: {error}",
-                    reported_destination.display()
-                ),
-            )
-        })?;
-        validate_destination(&destination, &reported_destination)?;
+        let lock = OutputLock::acquire(lock_path, &reported_output)?;
+        validate_output_available(&output, &reported_output)?;
 
         let staging = create_staging_directory(&parent, file_name)?;
         Ok(Self {
-            destination,
-            reported_destination,
+            output,
+            reported_output,
             staging,
             _lock: lock,
-            published: false,
         })
     }
 
@@ -581,71 +704,52 @@ impl OutputTransaction {
         &self.staging
     }
 
-    fn reported_destination(&self) -> &Path {
-        &self.reported_destination
+    fn reported_output(&self) -> &Path {
+        &self.reported_output
     }
 
-    fn publish(&mut self) -> io::Result<()> {
-        match fs::symlink_metadata(&self.destination) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!(
-                            "output path is not an empty directory: {}",
-                            self.reported_destination.display()
-                        ),
-                    ));
-                }
-                if fs::read_dir(&self.destination)?.next().is_some() {
-                    return Err(non_empty_destination_error(&self.reported_destination));
-                }
-                fs::remove_dir(&self.destination)?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        fs::rename(&self.staging, &self.destination)?;
-        self.published = true;
-        Ok(())
+    fn publish(&mut self, frames: &[FrameSpec]) -> io::Result<()> {
+        let archive = self.staging.join(".eli-loadscreen-bake.tar");
+        create_tar_archive(&self.staging, &archive, frames)?;
+        validate_output_available(&self.output, &self.reported_output)?;
+        fs::rename(archive, &self.output)
     }
 }
 
 impl Drop for OutputTransaction {
     fn drop(&mut self) {
-        if !self.published && self.staging.exists() {
+        if self.staging.exists() {
             let _ = fs::remove_dir_all(&self.staging);
         }
     }
 }
 
-fn validate_destination(destination: &Path, reported_destination: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(destination) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!(
-                        "output path is not an empty directory: {}",
-                        reported_destination.display()
-                    ),
-                ));
-            }
-            if fs::read_dir(destination)?.next().is_some() {
-                return Err(non_empty_destination_error(reported_destination));
-            }
-            Ok(())
-        }
+fn validate_output_available(output: &Path, reported_output: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(output) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("output file already exists: {}", reported_output.display()),
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-fn non_empty_destination_error(destination: &Path) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        format!("output directory is not empty: {}", destination.display()),
-    )
+fn create_tar_archive(staging: &Path, archive: &Path, frames: &[FrameSpec]) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(archive)?;
+    let writer = BufWriter::new(file);
+    let mut builder = TarBuilder::new(writer);
+    builder.mode(HeaderMode::Deterministic);
+    builder.follow_symlinks(false);
+    for frame in frames {
+        builder.append_path_with_name(staging.join(&frame.file_name), &frame.file_name)?;
+    }
+    let mut writer = builder.into_inner()?;
+    writer.flush()?;
+    writer.get_ref().sync_all()
 }
 
 fn create_staging_directory(parent: &Path, file_name: &std::ffi::OsStr) -> io::Result<PathBuf> {
@@ -684,16 +788,18 @@ mod tests {
     fn default_slices_have_the_expected_names_and_linear_sigma() {
         let frames = frame_specs(1920, 1080, DEFAULT_SLICES);
 
-        assert_eq!(frames.len(), 9);
+        assert_eq!(DEFAULT_SLICES, 25);
+        assert_eq!(frames.len(), 26);
         assert_eq!(frames[0].file_name, "lsbp_0000.webp");
-        assert_eq!(frames[1].file_name, "lsbp_0125.webp");
-        assert_eq!(frames[8].file_name, "lsbp_1000.webp");
+        assert_eq!(frames[1].file_name, "lsbp_0040.webp");
+        assert_eq!(frames[25].file_name, "lsbp_1000.webp");
         assert!(frames.windows(2).all(|pair| pair[0].sigma > pair[1].sigma));
         let delta = frames[0].sigma - frames[1].sigma;
+        let tolerance = frames[0].sigma * f32::EPSILON * 4.0;
         assert!(
-            frames.windows(2).all(|pair| {
-                ((pair[0].sigma - pair[1].sigma) - delta).abs() < f32::EPSILON * 16.0
-            })
+            frames
+                .windows(2)
+                .all(|pair| { ((pair[0].sigma - pair[1].sigma) - delta).abs() < tolerance })
         );
         assert_eq!(frames.last().unwrap().sigma, 0.0);
     }
@@ -708,6 +814,14 @@ mod tests {
             assert_eq!(marks[0], 0);
             assert_eq!(*marks.last().unwrap(), 1000);
         }
+    }
+
+    #[test]
+    fn calculates_proportional_downsample_dimensions() {
+        assert_eq!(downsampled_dimensions(6000, 4000, true), Some((4096, 2731)));
+        assert_eq!(downsampled_dimensions(4000, 6000, true), Some((2731, 4096)));
+        assert_eq!(downsampled_dimensions(4096, 2160, true), None);
+        assert_eq!(downsampled_dimensions(6000, 4000, false), None);
     }
 
     #[test]
@@ -726,6 +840,25 @@ mod tests {
             validate_quality(MAX_QUALITY + 1).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn requires_a_tar_output_extension_before_reading_the_source() {
+        for output in ["output", "output.bin"] {
+            let error = bake(
+                Path::new("missing-source.png"),
+                Path::new(output),
+                1,
+                None,
+                DEFAULT_QUALITY,
+                true,
+                &|_| {},
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains(".tar"));
+        }
+        assert!(validate_output_path(Path::new("output.TAR")).is_ok());
     }
 
     #[test]
@@ -802,7 +935,7 @@ mod tests {
         let root = temporary_directory();
         fs::create_dir(&root).unwrap();
         let source = root.join("source.png");
-        let output = root.join("output");
+        let output = root.join("output.tar");
         let image = ImageBuffer::from_fn(32, 18, |x, y| {
             Rgba([(x * 7) as u8, (y * 11) as u8, ((x + y) * 3) as u8, 255])
         });
@@ -815,6 +948,7 @@ mod tests {
             DEFAULT_SLICES,
             None,
             DEFAULT_QUALITY,
+            true,
             &|event| {
                 events
                     .lock()
@@ -826,24 +960,62 @@ mod tests {
 
         assert_eq!((result.width, result.height), (32, 18));
         assert_eq!(result.quality, DEFAULT_QUALITY);
-        assert_eq!(result.files.len(), 9);
-        for path in &result.files {
-            let baked = image::open(path).unwrap();
+        assert_eq!(result.output, output);
+        assert_eq!(result.entries.len(), 26);
+        let entries = read_archive(&output);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            result
+                .entries
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        for (_, bytes) in &entries {
+            let baked = image::load_from_memory_with_format(bytes, ImageFormat::WebP).unwrap();
             assert_eq!((baked.width(), baked.height()), (32, 18));
         }
-        let clear_frame = fs::read(output.join("lsbp_1000.webp")).unwrap();
+        let clear_frame = &entries.last().unwrap().1;
         assert!(clear_frame.windows(4).any(|chunk| chunk == b"VP8 "));
         let events = events.into_inner().unwrap();
         assert!(matches!(
             events.first(),
-            Some(BakeEvent::Started { total: 9, .. })
+            Some(BakeEvent::Preparing {
+                stage: BakePreparationStage::DecodeInput
+            })
         ));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, BakeEvent::Started { total: 26, .. }))
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BakeEvent::Preparing {
+                stage: BakePreparationStage::PrepareOutput
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BakeEvent::Preparing {
+                stage: BakePreparationStage::PreparePixels
+            }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BakeEvent::Preparing {
+                stage: BakePreparationStage::Downsample { .. }
+            }
+        )));
         assert_eq!(
             events
                 .iter()
                 .filter(|event| matches!(event, BakeEvent::JobFinished { .. }))
                 .count(),
-            9
+            26
         );
         let completed = events
             .iter()
@@ -852,57 +1024,135 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(completed, (1..=9).collect::<Vec<_>>());
+        assert_eq!(completed, (1..=26).collect::<Vec<_>>());
         assert!(matches!(events.last(), Some(BakeEvent::Finished { .. })));
+        assert!(!root.join(".output.tar.eli-loadscreen-bake.lock").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn refuses_to_modify_a_non_empty_output_directory() {
+    fn downsamples_large_images_unless_disabled() {
         let root = temporary_directory();
         fs::create_dir(&root).unwrap();
         let source = root.join("source.png");
-        let output = root.join("output");
-        fs::create_dir(&output).unwrap();
-        fs::write(output.join("keep.txt"), "keep").unwrap();
+        ImageBuffer::from_fn(4097, 3, |x, y| {
+            Rgba([(x % 256) as u8, (y * 80) as u8, 100, 255])
+        })
+        .save(&source)
+        .unwrap();
+
+        let capped_output = root.join("capped.tar");
+        let capped_events = Mutex::new(Vec::new());
+        let capped = bake(&source, &capped_output, 1, None, 0, true, &|event| {
+            capped_events.lock().unwrap().push(event)
+        })
+        .unwrap();
+        assert_eq!((capped.width, capped.height), (4096, 3));
+        assert!(capped_events.into_inner().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                BakeEvent::Preparing {
+                    stage: BakePreparationStage::Downsample {
+                        source_width: 4097,
+                        source_height: 3,
+                        output_width: 4096,
+                        output_height: 3,
+                    }
+                }
+            )
+        }));
+        for (_, bytes) in read_archive(&capped_output) {
+            let image = image::load_from_memory_with_format(&bytes, ImageFormat::WebP).unwrap();
+            assert_eq!((image.width(), image.height()), (4096, 3));
+        }
+
+        let original_output = root.join("original.tar");
+        let original_events = Mutex::new(Vec::new());
+        let uncapped = bake(&source, &original_output, 1, None, 0, false, &|event| {
+            original_events.lock().unwrap().push(event)
+        })
+        .unwrap();
+        assert_eq!((uncapped.width, uncapped.height), (4097, 3));
+        assert!(!original_events.into_inner().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                BakeEvent::Preparing {
+                    stage: BakePreparationStage::Downsample { .. }
+                }
+            )
+        }));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_replace_an_existing_output_file() {
+        let root = temporary_directory();
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source.png");
+        let output = root.join("output.tar");
+        fs::write(&output, "keep").unwrap();
         ImageBuffer::from_pixel(2, 2, Rgba([1_u8, 2, 3, 255]))
             .save(&source)
             .unwrap();
 
-        let error = bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}).unwrap_err();
+        let error = bake(&source, &output, 1, None, DEFAULT_QUALITY, true, &|_| {}).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read_to_string(output.join("keep.txt")).unwrap(), "keep");
+        assert_eq!(fs::read_to_string(output).unwrap(), "keep");
+        assert!(!root.join(".output.tar.eli-loadscreen-bake.lock").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn concurrent_bakes_to_one_directory_publish_only_one_result() {
+    fn recovers_and_removes_a_stale_output_lock() {
         let root = temporary_directory();
         fs::create_dir(&root).unwrap();
         let source = root.join("source.png");
-        let output = root.join("output");
+        let output = root.join("output.tar");
+        let lock = root.join(".output.tar.eli-loadscreen-bake.lock");
+        ImageBuffer::from_pixel(2, 2, Rgba([1_u8, 2, 3, 255]))
+            .save(&source)
+            .unwrap();
+        fs::write(&lock, []).unwrap();
+
+        let result = bake(&source, &output, 1, None, DEFAULT_QUALITY, true, &|_| {}).unwrap();
+
+        assert_eq!(result.entries.len(), 2);
+        assert!(!lock.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_bakes_to_one_file_publish_only_one_result() {
+        let root = temporary_directory();
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source.png");
+        let output = root.join("output.tar");
         ImageBuffer::from_pixel(8, 8, Rgba([1_u8, 2, 3, 255]))
             .save(&source)
             .unwrap();
 
         let results = thread::scope(|scope| {
-            let first = scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}));
-            let second = scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, &|_| {}));
+            let first =
+                scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, true, &|_| {}));
+            let second =
+                scope.spawn(|| bake(&source, &output, 1, None, DEFAULT_QUALITY, true, &|_| {}));
             [first.join().unwrap(), second.join().unwrap()]
         });
 
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(
+        assert!(matches!(
             results
                 .iter()
                 .filter_map(|result| result.as_ref().err())
                 .next()
                 .unwrap()
                 .kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+            io::ErrorKind::AlreadyExists | io::ErrorKind::WouldBlock
+        ));
+        assert_eq!(read_archive(&output).len(), 2);
+        assert!(!root.join(".output.tar.eli-loadscreen-bake.lock").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -920,6 +1170,21 @@ mod tests {
 
         assert_eq!(worker_count(usize::MAX, None), parallelism);
         assert_eq!(worker_count(1, None), 1);
+    }
+
+    fn read_archive(output: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut archive = tar::Archive::new(File::open(output).unwrap());
+        archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let mut entry = entry.unwrap();
+                let name = entry.path().unwrap().to_string_lossy().into_owned();
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                (name, bytes)
+            })
+            .collect()
     }
 
     fn animated_webp() -> Vec<u8> {

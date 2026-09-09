@@ -988,6 +988,7 @@ dependencies = [
  "isomage",
  "serde",
  "serde_json",
+ "tar",
  "ureq",
  "url",
  "webp",

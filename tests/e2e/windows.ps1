@@ -68,14 +68,15 @@ try {
     Set-Content -NoNewline -Path $nesPakSource -Value 'nespak'
 
     $loadscreenSource = Join-Path $resolvedTestRoot 'loadscreen.png'
-    $loadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-baked'
+    $loadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen.tar'
+    $loadscreenExtracted = Join-Path $resolvedTestRoot 'loadscreen-extracted'
     [System.IO.File]::WriteAllBytes(
         $loadscreenSource,
         [Convert]::FromBase64String(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
         )
     )
-    & $eli loadscreen bake $loadscreenSource -d $loadscreenOutput -s 8 `
+    & $eli loadscreen bake $loadscreenSource -o $loadscreenOutput `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) {
         throw "Loadscreen baking failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
@@ -84,16 +85,27 @@ try {
         throw 'Loadscreen baking did not use the default WebP quality 90.'
     }
     $expectedLoadscreenFiles = @(
-        'lsbp_0000.webp', 'lsbp_0125.webp', 'lsbp_0250.webp',
-        'lsbp_0375.webp', 'lsbp_0500.webp', 'lsbp_0625.webp',
-        'lsbp_0750.webp', 'lsbp_0875.webp', 'lsbp_1000.webp'
+        'lsbp_0000.webp', 'lsbp_0040.webp', 'lsbp_0080.webp',
+        'lsbp_0120.webp', 'lsbp_0160.webp', 'lsbp_0200.webp',
+        'lsbp_0240.webp', 'lsbp_0280.webp', 'lsbp_0320.webp',
+        'lsbp_0360.webp', 'lsbp_0400.webp', 'lsbp_0440.webp',
+        'lsbp_0480.webp', 'lsbp_0520.webp', 'lsbp_0560.webp',
+        'lsbp_0600.webp', 'lsbp_0640.webp', 'lsbp_0680.webp',
+        'lsbp_0720.webp', 'lsbp_0760.webp', 'lsbp_0800.webp',
+        'lsbp_0840.webp', 'lsbp_0880.webp', 'lsbp_0920.webp',
+        'lsbp_0960.webp', 'lsbp_1000.webp'
     )
-    $actualLoadscreenFiles = @(Get-ChildItem -LiteralPath $loadscreenOutput -File)
-    if ($actualLoadscreenFiles.Count -ne 9) {
-        throw "Expected 9 baked loadscreen images, got $($actualLoadscreenFiles.Count)."
+    New-Item -ItemType Directory -Path $loadscreenExtracted | Out-Null
+    & tar -xf $loadscreenOutput -C $loadscreenExtracted
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Loadscreen output is not a valid tar archive.'
+    }
+    $actualLoadscreenFiles = @(Get-ChildItem -LiteralPath $loadscreenExtracted -File)
+    if ($actualLoadscreenFiles.Count -ne 26) {
+        throw "Expected 26 baked loadscreen images, got $($actualLoadscreenFiles.Count)."
     }
     foreach ($fileName in $expectedLoadscreenFiles) {
-        $outputFile = Join-Path $loadscreenOutput $fileName
+        $outputFile = Join-Path $loadscreenExtracted $fileName
         if (-not (Test-Path -LiteralPath $outputFile -PathType Leaf)) {
             throw "Missing baked loadscreen image $fileName."
         }
@@ -106,14 +118,20 @@ try {
     $loadscreenProgress = Get-Content -Raw -LiteralPath $stderrPath
     if (-not ([regex]::IsMatch(
                 $loadscreenProgress,
-                'Baking 9 loadscreen images with [1-9][0-9]* jobs?'
+                'Baking 26 loadscreen images with [1-9][0-9]* jobs?'
             ) -and
-            $loadscreenProgress.Contains('lsbp_1000.webp completed'))) {
+            $loadscreenProgress.Contains('lsbp_1000.webp completed') -and
+            $loadscreenProgress.Contains('正在读取并解码输入图片') -and
+            $loadscreenProgress.Contains('正在准备输出文件和临时工作区') -and
+            $loadscreenProgress.Contains('正在检查透明度并准备像素缓冲区'))) {
         throw "Loadscreen baking did not report job progress: '$loadscreenProgress'."
     }
+    if (Test-Path -LiteralPath (Join-Path $resolvedTestRoot '.loadscreen.tar.eli-loadscreen-bake.lock')) {
+        throw 'Loadscreen baking left its destination lock file behind.'
+    }
 
-    $singleJobOutput = Join-Path $resolvedTestRoot 'loadscreen-single-job'
-    & $eli loadscreen bake $loadscreenSource -d $singleJobOutput -s 1 -j 1 -q 75 `
+    $singleJobOutput = Join-Path $resolvedTestRoot 'loadscreen-single-job.tar'
+    & $eli loadscreen bake $loadscreenSource -o $singleJobOutput -s 1 -j 1 -q 75 `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0 -or
             -not (Get-Content -Raw -LiteralPath $stderrPath).Contains(
@@ -123,7 +141,41 @@ try {
         throw 'Loadscreen baking did not honor explicit job and quality options.'
     }
 
-    $concurrentLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-concurrent'
+    $largeLoadscreenSource = Join-Path $resolvedTestRoot 'loadscreen-large.bmp'
+    $largeBitmap = [byte[]]::new(16442)
+    [Text.Encoding]::ASCII.GetBytes('BM').CopyTo($largeBitmap, 0)
+    [BitConverter]::GetBytes([uint32]16442).CopyTo($largeBitmap, 2)
+    [BitConverter]::GetBytes([uint32]54).CopyTo($largeBitmap, 10)
+    [BitConverter]::GetBytes([uint32]40).CopyTo($largeBitmap, 14)
+    [BitConverter]::GetBytes([int32]4097).CopyTo($largeBitmap, 18)
+    [BitConverter]::GetBytes([int32]1).CopyTo($largeBitmap, 22)
+    [BitConverter]::GetBytes([uint16]1).CopyTo($largeBitmap, 26)
+    [BitConverter]::GetBytes([uint16]32).CopyTo($largeBitmap, 28)
+    [BitConverter]::GetBytes([uint32]16388).CopyTo($largeBitmap, 34)
+    [System.IO.File]::WriteAllBytes($largeLoadscreenSource, $largeBitmap)
+
+    $downsampledOutput = Join-Path $resolvedTestRoot 'loadscreen-downsampled.tar'
+    & $eli loadscreen bake $largeLoadscreenSource -o $downsampledOutput -s 1 -j 1 -q 0 `
+        1> $stdoutPath 2> $stderrPath
+    $downsampledStdout = Get-Content -Raw -LiteralPath $stdoutPath
+    $downsampledStderr = Get-Content -Raw -LiteralPath $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not $downsampledStdout.Contains('(4096x1,') -or
+            -not $downsampledStderr.Contains('4097×1') -or
+            -not $downsampledStderr.Contains('4096×1')) {
+        throw 'Loadscreen baking did not automatically downsample a large input.'
+    }
+
+    $originalSizeOutput = Join-Path $resolvedTestRoot 'loadscreen-original-size.tar'
+    & $eli loadscreen bake $largeLoadscreenSource -o $originalSizeOutput -s 1 -j 1 -q 0 `
+        --no-downsample 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            -not (Get-Content -Raw -LiteralPath $stdoutPath).Contains('(4097x1,') -or
+            (Get-Content -Raw -LiteralPath $stderrPath).Contains('正在等比降采样')) {
+        throw 'Loadscreen baking did not honor --no-downsample.'
+    }
+
+    $concurrentLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-concurrent.tar'
     $bakeProcesses = @(1..2 | ForEach-Object {
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
             $startInfo.FileName = $eli
@@ -133,7 +185,7 @@ try {
             $startInfo.RedirectStandardError = $true
             foreach ($argument in @(
                     'loadscreen', 'bake', $loadscreenSource,
-                    '-d', $concurrentLoadscreenOutput, '-s', '2'
+                    '-o', $concurrentLoadscreenOutput, '-s', '2'
                 )) {
                 [void]$startInfo.ArgumentList.Add($argument)
             }
@@ -148,8 +200,23 @@ try {
     if (@($bakeExitCodes | Where-Object { $_ -eq 0 }).Count -ne 1) {
         throw "Expected one concurrent loadscreen bake to succeed, got '$($bakeExitCodes -join ', ')'."
     }
-    if (@(Get-ChildItem -LiteralPath $concurrentLoadscreenOutput -File).Count -ne 3) {
+    $concurrentExtracted = Join-Path $resolvedTestRoot 'loadscreen-concurrent-extracted'
+    New-Item -ItemType Directory -Path $concurrentExtracted | Out-Null
+    & tar -xf $concurrentLoadscreenOutput -C $concurrentExtracted
+    if ($LASTEXITCODE -ne 0 -or @(Get-ChildItem -LiteralPath $concurrentExtracted -File).Count -ne 3) {
         throw 'Concurrent loadscreen baking published an incomplete result.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $resolvedTestRoot '.loadscreen-concurrent.tar.eli-loadscreen-bake.lock')) {
+        throw 'Concurrent loadscreen baking left its destination lock file behind.'
+    }
+
+    $invalidLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen.bin'
+    & $eli loadscreen bake $loadscreenSource -o $invalidLoadscreenOutput `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('.tar') -or
+            (Test-Path -LiteralPath $invalidLoadscreenOutput)) {
+        throw 'Loadscreen baking accepted an output path without a .tar extension.'
     }
 
     $loadscreenGif = Join-Path $resolvedTestRoot 'loadscreen.gif'
@@ -157,7 +224,7 @@ try {
         $loadscreenGif,
         [Convert]::FromBase64String('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==')
     )
-    & $eli loadscreen bake $loadscreenGif -d (Join-Path $resolvedTestRoot 'gif-baked') `
+    & $eli loadscreen bake $loadscreenGif -o (Join-Path $resolvedTestRoot 'gif-baked.tar') `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0 -or
             -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('GIF images are not supported')) {
