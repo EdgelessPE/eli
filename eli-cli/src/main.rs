@@ -5,6 +5,8 @@ use command::bootdisk::BootdiskCommand;
 use command::config::ConfigCommand;
 use command::hook::HookCommand;
 use command::kernel::KernelCommand;
+#[cfg(feature = "loadscreen-bake")]
+use command::loadscreen::LoadscreenCommand;
 use command::nespak::NesPakCommand;
 use command::plugin::PluginCommand;
 use eli_lib::Ctx;
@@ -49,6 +51,12 @@ enum Command {
         #[command(subcommand)]
         command: KernelCommand,
     },
+    /// Bake images used by the Edgeless loading screen.
+    #[cfg(feature = "loadscreen-bake")]
+    Loadscreen {
+        #[command(subcommand)]
+        command: LoadscreenCommand,
+    },
     /// Import NesPak resources into the running Edgeless environment.
     Nespak {
         #[command(subcommand)]
@@ -66,6 +74,8 @@ fn main() -> std::io::Result<()> {
         Command::Config { command } => command::config::execute(ctx.as_ref(), command),
         Command::Hook { command } => command::hook::execute(ctx.as_ref(), command),
         Command::Kernel { command } => command::kernel::execute(ctx.as_ref(), command),
+        #[cfg(feature = "loadscreen-bake")]
+        Command::Loadscreen { command } => command::loadscreen::execute(command),
         Command::Nespak { command } => command::nespak::execute(ctx.as_ref(), command),
     }
 }
@@ -522,6 +532,20 @@ mod tests {
                 command: KernelCommand::Download { force: true, .. },
             }
         ));
+    }
+
+    #[cfg(not(feature = "loadscreen-bake"))]
+    #[test]
+    fn excludes_loadscreen_bake_when_the_feature_is_disabled() {
+        let error =
+            Cli::try_parse_from(["eli", "loadscreen", "bake", "wallpaper.png", "-d", "baked"])
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unrecognized subcommand 'loadscreen'")
+        );
     }
 
     #[test]

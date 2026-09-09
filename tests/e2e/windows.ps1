@@ -67,6 +67,86 @@ try {
     $nesPakSource = Join-Path $resolvedTestRoot 'NesPak.7z'
     Set-Content -NoNewline -Path $nesPakSource -Value 'nespak'
 
+    $loadscreenSource = Join-Path $resolvedTestRoot 'loadscreen.png'
+    $loadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-baked'
+    [System.IO.File]::WriteAllBytes(
+        $loadscreenSource,
+        [Convert]::FromBase64String(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+        )
+    )
+    & $eli loadscreen bake $loadscreenSource -d $loadscreenOutput -s 8 -j 1 `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Loadscreen baking failed: '$(Get-Content -Raw -LiteralPath $stderrPath)'."
+    }
+    $expectedLoadscreenFiles = @(
+        'lsbp_0000.webp', 'lsbp_0125.webp', 'lsbp_0250.webp',
+        'lsbp_0375.webp', 'lsbp_0500.webp', 'lsbp_0625.webp',
+        'lsbp_0750.webp', 'lsbp_0875.webp', 'lsbp_1000.webp'
+    )
+    $actualLoadscreenFiles = @(Get-ChildItem -LiteralPath $loadscreenOutput -File)
+    if ($actualLoadscreenFiles.Count -ne 9) {
+        throw "Expected 9 baked loadscreen images, got $($actualLoadscreenFiles.Count)."
+    }
+    foreach ($fileName in $expectedLoadscreenFiles) {
+        $outputFile = Join-Path $loadscreenOutput $fileName
+        if (-not (Test-Path -LiteralPath $outputFile -PathType Leaf)) {
+            throw "Missing baked loadscreen image $fileName."
+        }
+        $bytes = [System.IO.File]::ReadAllBytes($outputFile)
+        if ([Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'RIFF' -or
+                [Text.Encoding]::ASCII.GetString($bytes, 8, 4) -ne 'WEBP') {
+            throw "Baked loadscreen image $fileName is not WebP."
+        }
+    }
+    $loadscreenProgress = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($loadscreenProgress.Contains('Baking 9 loadscreen images with 1 job') -and
+            $loadscreenProgress.Contains('lsbp_1000.webp completed'))) {
+        throw "Loadscreen baking did not report job progress: '$loadscreenProgress'."
+    }
+
+    $concurrentLoadscreenOutput = Join-Path $resolvedTestRoot 'loadscreen-concurrent'
+    $bakeProcesses = @(1..2 | ForEach-Object {
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $eli
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @(
+                    'loadscreen', 'bake', $loadscreenSource,
+                    '-d', $concurrentLoadscreenOutput, '-s', '2'
+                )) {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+            [System.Diagnostics.Process]::Start($startInfo)
+        })
+    $bakeExitCodes = @($bakeProcesses | ForEach-Object {
+            $_.WaitForExit()
+            $exitCode = $_.ExitCode
+            $_.Dispose()
+            $exitCode
+        })
+    if (@($bakeExitCodes | Where-Object { $_ -eq 0 }).Count -ne 1) {
+        throw "Expected one concurrent loadscreen bake to succeed, got '$($bakeExitCodes -join ', ')'."
+    }
+    if (@(Get-ChildItem -LiteralPath $concurrentLoadscreenOutput -File).Count -ne 3) {
+        throw 'Concurrent loadscreen baking published an incomplete result.'
+    }
+
+    $loadscreenGif = Join-Path $resolvedTestRoot 'loadscreen.gif'
+    [System.IO.File]::WriteAllBytes(
+        $loadscreenGif,
+        [Convert]::FromBase64String('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==')
+    )
+    & $eli loadscreen bake $loadscreenGif -d (Join-Path $resolvedTestRoot 'gif-baked') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('GIF images are not supported')) {
+        throw 'Loadscreen baking unexpectedly accepted GIF input.'
+    }
+
     & $eli nespak store $nesPakSource 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'NesPak storage unexpectedly selected one of multiple boot disks.'

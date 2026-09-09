@@ -51,6 +51,53 @@ stderr_path="$test_root/stderr.txt"
 nespak_source="$test_root/NesPak.7z"
 printf '%s' 'nespak' > "$nespak_source"
 
+loadscreen_source="$test_root/loadscreen.png"
+loadscreen_output="$test_root/loadscreen-baked"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' |
+    base64 --decode > "$loadscreen_source"
+"$eli" loadscreen bake "$loadscreen_source" -d "$loadscreen_output" -s 8 -j 1 > "$stdout_path" 2> "$stderr_path"
+expected_loadscreen_files=(
+    lsbp_0000.webp lsbp_0125.webp lsbp_0250.webp
+    lsbp_0375.webp lsbp_0500.webp lsbp_0625.webp
+    lsbp_0750.webp lsbp_0875.webp lsbp_1000.webp
+)
+[[ "$(find "$loadscreen_output" -maxdepth 1 -type f | wc -l)" -eq 9 ]]
+for file_name in "${expected_loadscreen_files[@]}"; do
+    output_file="$loadscreen_output/$file_name"
+    [[ -f "$output_file" ]]
+    [[ "$(head -c 4 "$output_file")" == 'RIFF' ]]
+    [[ "$(dd if="$output_file" bs=1 skip=8 count=4 2>/dev/null)" == 'WEBP' ]]
+done
+grep -Fq 'Baking 9 loadscreen images with 1 job' "$stderr_path"
+grep -Fq 'lsbp_1000.webp completed' "$stderr_path"
+
+concurrent_loadscreen_output="$test_root/loadscreen-concurrent"
+"$eli" loadscreen bake "$loadscreen_source" -d "$concurrent_loadscreen_output" -s 2 \
+    > "$test_root/loadscreen-first.stdout" 2> "$test_root/loadscreen-first.stderr" &
+first_bake_pid=$!
+"$eli" loadscreen bake "$loadscreen_source" -d "$concurrent_loadscreen_output" -s 2 \
+    > "$test_root/loadscreen-second.stdout" 2> "$test_root/loadscreen-second.stderr" &
+second_bake_pid=$!
+successful_bakes=0
+if wait "$first_bake_pid"; then
+    ((successful_bakes += 1))
+fi
+if wait "$second_bake_pid"; then
+    ((successful_bakes += 1))
+fi
+[[ "$successful_bakes" -eq 1 ]]
+[[ "$(find "$concurrent_loadscreen_output" -maxdepth 1 -type f | wc -l)" -eq 3 ]]
+
+loadscreen_gif="$test_root/loadscreen.gif"
+printf '%s' 'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' |
+    base64 --decode > "$loadscreen_gif"
+if "$eli" loadscreen bake "$loadscreen_gif" -d "$test_root/gif-baked" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Loadscreen baking unexpectedly accepted GIF input.' >&2
+    exit 1
+fi
+grep -Fq 'GIF images are not supported' "$stderr_path"
+[[ ! -e "$test_root/gif-baked" ]]
+
 if "$eli" nespak store "$nespak_source" > "$stdout_path" 2> "$stderr_path"; then
     echo 'NesPak storage unexpectedly selected one of multiple boot disks.' >&2
     exit 1
