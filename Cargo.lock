@@ -983,11 +983,14 @@ name = "eli-lib"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "i-slint-backend-winit",
  "image",
  "indicatif",
  "isomage",
+ "raw-window-handle",
  "serde",
  "serde_json",
+ "slint",
  "tar",
  "ureq",
  "url",

@@ -2,7 +2,6 @@ pub(crate) mod bootdisk;
 pub(crate) mod config;
 pub(crate) mod hook;
 pub(crate) mod kernel;
-#[cfg(feature = "loadscreen-bake")]
 pub(crate) mod loadscreen;
 pub(crate) mod nespak;
 pub(crate) mod plugin;

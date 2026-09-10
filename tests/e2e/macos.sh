@@ -68,6 +68,13 @@ loadscreen_output="$test_root/loadscreen.tar"
 loadscreen_extracted="$test_root/loadscreen-extracted"
 printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' |
     base64 -D > "$loadscreen_source"
+"$eli" loadscreen play --help > "$stdout_path" 2> "$stderr_path"
+grep -Fq -- '--demo <IMAGE>' "$stdout_path"
+if "$eli" loadscreen play --demo "$loadscreen_source" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Loadscreen play unexpectedly started outside Windows.' >&2
+    exit 1
+fi
+grep -Fq 'requires a Windows environment' "$stderr_path"
 "$eli" loadscreen bake "$loadscreen_source" -o "$loadscreen_output" > "$stdout_path" 2> "$stderr_path"
 grep -Fq 'quality 90' "$stdout_path"
 expected_loadscreen_files=(

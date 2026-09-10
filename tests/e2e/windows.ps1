@@ -76,6 +76,10 @@ try {
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
         )
     )
+    $playHelp = (& $eli loadscreen play --help 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or -not $playHelp.Contains('--demo <IMAGE>')) {
+        throw "Loadscreen play demo command is unavailable: '$playHelp'."
+    }
     & $eli loadscreen bake $loadscreenSource -o $loadscreenOutput `
         1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -ne 0) {

@@ -1,20 +1,37 @@
 use clap::Subcommand;
+use eli_lib::Ctx;
+#[cfg(feature = "loadscreen-bake")]
 use eli_lib::command::loadscreen::{
     BakeEvent, BakeJobPhase, BakePreparationStage, DEFAULT_QUALITY, DEFAULT_SLICES, MAX_QUALITY,
     MAX_SLICES,
 };
+#[cfg(feature = "loadscreen-bake")]
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+#[cfg(feature = "loadscreen-bake")]
 use std::collections::HashMap;
-use std::io::{self, IsTerminal};
+use std::io;
+#[cfg(feature = "loadscreen-bake")]
+use std::io::IsTerminal;
+#[cfg(feature = "loadscreen-bake")]
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+#[cfg(feature = "loadscreen-bake")]
 use std::sync::Mutex;
+#[cfg(feature = "loadscreen-bake")]
 use std::time::Duration;
 
+#[cfg(feature = "loadscreen-bake")]
 const MAX_VISIBLE_JOB_BARS: usize = 8;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum LoadscreenCommand {
+    /// Preview the loading-screen player.
+    Play {
+        /// Show the fixed demo state over a static background image.
+        #[arg(long, value_name = "IMAGE")]
+        demo: PathBuf,
+    },
+    #[cfg(feature = "loadscreen-bake")]
     /// Bake a static image into loading-screen WebP frames.
     Bake {
         /// Path to the source static image.
@@ -48,8 +65,10 @@ pub(crate) enum LoadscreenCommand {
     },
 }
 
-pub(crate) fn execute(command: LoadscreenCommand) -> io::Result<()> {
+pub(crate) fn execute(ctx: &Ctx, command: LoadscreenCommand) -> io::Result<()> {
     match command {
+        LoadscreenCommand::Play { demo } => eli_lib::command::loadscreen::play_demo(ctx, &demo),
+        #[cfg(feature = "loadscreen-bake")]
         LoadscreenCommand::Bake {
             image,
             output,
@@ -83,6 +102,7 @@ pub(crate) fn execute(command: LoadscreenCommand) -> io::Result<()> {
     }
 }
 
+#[cfg(feature = "loadscreen-bake")]
 struct ProgressDisplay {
     interactive: bool,
     multi: MultiProgress,
@@ -90,6 +110,7 @@ struct ProgressDisplay {
     jobs: Mutex<HashMap<u16, ProgressBar>>,
 }
 
+#[cfg(feature = "loadscreen-bake")]
 impl ProgressDisplay {
     fn new() -> Self {
         Self {
@@ -265,14 +286,17 @@ impl ProgressDisplay {
     }
 }
 
+#[cfg(feature = "loadscreen-bake")]
 fn job_label(count: usize) -> &'static str {
     if count == 1 { "job" } else { "jobs" }
 }
 
+#[cfg(feature = "loadscreen-bake")]
 fn completed_job_message(file_name: &str, elapsed: Duration) -> String {
     format!("{file_name} 完成 · {elapsed:.2?}")
 }
 
+#[cfg(feature = "loadscreen-bake")]
 fn preparation_message(stage: BakePreparationStage) -> String {
     match stage {
         BakePreparationStage::DecodeInput => "正在读取并解码输入图片…".to_owned(),
@@ -289,7 +313,7 @@ fn preparation_message(stage: BakePreparationStage) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "loadscreen-bake"))]
 mod tests {
     use super::*;
     use clap::Parser;
@@ -499,5 +523,35 @@ mod tests {
             MAX_VISIBLE_JOB_BARS
         );
         progress.handle(BakeEvent::Aborted);
+    }
+}
+
+#[cfg(test)]
+mod play_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_play_demo_with_a_background_image() {
+        let cli = crate::Cli::try_parse_from([
+            "eli",
+            "loadscreen",
+            "play",
+            "--demo",
+            r"D:\Download\img0.jpg",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            crate::Command::Loadscreen {
+                command: LoadscreenCommand::Play { demo }
+            } if demo == std::path::Path::new(r"D:\Download\img0.jpg")
+        ));
+    }
+
+    #[test]
+    fn play_demo_requires_a_background_image() {
+        assert!(crate::Cli::try_parse_from(["eli", "loadscreen", "play", "--demo"]).is_err());
     }
 }
