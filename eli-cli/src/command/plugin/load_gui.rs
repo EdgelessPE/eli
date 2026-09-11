@@ -125,7 +125,7 @@ mod ui {
                         commands: "M 3 3 L 11 11 M 11 3 L 3 11";
                     }
                     close-area := TouchArea {
-                        mouse-cursor: pointer;
+                        mouse-cursor: default;
                         clicked => { root.cancel-requested(); }
                     }
                 }
