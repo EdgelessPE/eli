@@ -1,8 +1,11 @@
-// 将此模板放入项目中的 Slint 编译入口，并按业务需要替换状态和文案。
+// 复制到 ui/<领域>/<界面>.slint 后，重命名导出组件并按业务需要替换状态和文案。
+// 同步创建 eli-cli/src/ui/<领域>/<界面>.rs，并将顶层入口加入 eli-cli/build.rs。
 
-import { Button, ButtonSize, ButtonVariant } from "../../../../ui/components/button.slint";
-import { EliWindow } from "../../../../ui/components/window/window.slint";
-import { Tokens } from "../../../../ui/theme/tokens.slint";
+import { Button, ButtonSize, ButtonVariant } from "../components/button.slint";
+import { EliWindow } from "../components/window/window.slint";
+export { WindowAdapter } from "../components/window/window.slint";
+import { Tokens } from "../theme/tokens.slint";
+export { Theme, ThemeMode } from "../theme/tokens.slint";
 
 export enum PromptTone { neutral, success, error }
 
