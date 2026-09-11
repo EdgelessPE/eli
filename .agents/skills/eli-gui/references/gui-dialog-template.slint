@@ -1,7 +1,8 @@
-// 将此模板放入项目中的 Slint 编译入口或通过 Rust 的 slint! 宏嵌入后再使用。
+// 将此模板放入项目中的 Slint 编译入口，并按业务需要替换状态和文案。
 
-import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
-import { Tokens } from "ui/slintcn/theme/tokens.slint";
+import { Button, ButtonSize, ButtonVariant } from "../../../../ui/components/button.slint";
+import { EliWindow } from "../../../../ui/components/window/window.slint";
+import { Tokens } from "../../../../ui/theme/tokens.slint";
 
 export enum PromptTone { neutral, success, error }
 
@@ -17,11 +18,10 @@ component PromptMark inherits Rectangle {
         : Tokens.color-destructive;
 }
 
-export component EliDialogTemplate inherits Window {
-    title: root.dialog-title;
+export component EliDialogTemplate inherits EliWindow {
+    window-title: root.dialog-title;
     width: 420px;
     height: 240px;
-    background: transparent;
 
     in property <string> dialog-title: "操作提示";
     in property <string> prompt: "请确认后继续操作。";
@@ -31,120 +31,80 @@ export component EliDialogTemplate inherits Window {
     in property <string> secondary-label: "";
     in property <bool> busy: false;
 
-    callback close-requested();
     callback cancel-requested();
     callback secondary-requested();
     callback primary-requested();
 
-    frame := Rectangle {
+    close-requested => { root.cancel-requested(); }
+
+    Rectangle {
+        x: 0px;
+        y: root.titlebar-height;
         width: parent.width;
-        height: parent.height;
-        background: Tokens.color-background;
-        border-color: Tokens.color-border-hairline;
-        border-width: 1px;
-        border-radius: Tokens.radius-lg;
+        height: 1px;
+        background: Tokens.color-border-hairline;
+    }
 
-        // Windows PE 的宿主命中测试应只将这个区域中的空白部分判定为可拖动。
-        Text {
-            x: Tokens.spacing-lg;
-            y: 0px;
-            width: parent.width - 64px;
-            height: 36px;
-            text: root.dialog-title;
-            color: Tokens.color-foreground;
-            font-size: Tokens.typography-body-size;
-            font-weight: Tokens.typography-weight-semibold;
-            vertical-alignment: center;
-            overflow: elide;
-        }
+    content := VerticalLayout {
+        x: Tokens.spacing-xl;
+        y: 60px;
+        width: parent.width - 2 * Tokens.spacing-xl;
+        height: parent.height - 124px;
+        spacing: Tokens.spacing-md;
 
-        Button {
-            x: parent.width - 40px;
-            y: 2px;
-            size: ButtonSize.icon-sm;
-            variant: ButtonVariant.ghost;
-            text: "";
-            clicked => { root.close-requested(); }
-
-            Image {
-                x: 8px;
-                y: 8px;
-                width: 16px;
-                height: 16px;
-                source: @image-url("ui/close.svg");
-                colorize: Tokens.color-foreground;
-            }
-        }
-
-        Rectangle {
-            x: 0px;
-            y: 36px;
-            width: parent.width;
-            height: 1px;
-            background: Tokens.color-border-hairline;
-        }
-
-        content := VerticalLayout {
-            x: Tokens.spacing-xl;
-            y: 60px;
-            width: parent.width - 2 * Tokens.spacing-xl;
-            height: parent.height - 124px;
-            spacing: Tokens.spacing-md;
-
-            HorizontalLayout {
-                spacing: Tokens.spacing-sm;
-                PromptMark { tone: root.prompt-tone; }
-                Text {
-                    text: root.prompt;
-                    color: Tokens.color-foreground;
-                    font-size: Tokens.typography-body-size;
-                    font-weight: Tokens.typography-weight-medium;
-                    wrap: word-wrap;
-                    vertical-stretch: 0;
-                }
-            }
-
+        HorizontalLayout {
+            spacing: Tokens.spacing-sm;
+            PromptMark { tone: root.prompt-tone; }
             Text {
-                visible: root.detail != "";
-                text: root.detail;
-                color: Tokens.color-muted-foreground;
-                font-size: Tokens.typography-body-sm-size;
+                text: root.prompt;
+                color: Tokens.color-window-foreground;
+                font-size: Tokens.typography-body-size;
+                font-weight: Tokens.typography-weight-medium;
                 wrap: word-wrap;
                 vertical-stretch: 0;
             }
-
-            Rectangle { vertical-stretch: 1; }
         }
 
-        HorizontalLayout {
-            x: Tokens.spacing-xl;
-            y: parent.height - 52px;
-            width: parent.width - 2 * Tokens.spacing-xl;
-            height: Tokens.density-button-default;
-            spacing: Tokens.spacing-sm;
-            alignment: end;
+        Text {
+            visible: root.detail != "";
+            text: root.detail;
+            color: Tokens.color-muted-foreground;
+            font-size: Tokens.typography-body-sm-size;
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
 
-            Button {
-                text: "取消";
-                variant: ButtonVariant.ghost;
-                size: ButtonSize.default;
-                disabled: root.busy;
-                clicked => { root.cancel-requested(); }
-            }
-            if root.secondary-label != "": Button {
-                text: root.secondary-label;
-                variant: ButtonVariant.outline;
-                size: ButtonSize.default;
-                disabled: root.busy;
-                clicked => { root.secondary-requested(); }
-            }
-            Button {
-                text: root.busy ? "处理中..." : root.primary-label;
-                variant: ButtonVariant.default;
-                size: ButtonSize.default;
-                disabled: root.busy;
-                clicked => { root.primary-requested(); }
-            }
+        Rectangle { vertical-stretch: 1; }
+    }
+
+    HorizontalLayout {
+        x: Tokens.spacing-xl;
+        y: parent.height - 52px;
+        width: parent.width - 2 * Tokens.spacing-xl;
+        height: Tokens.density-button-default;
+        spacing: Tokens.spacing-sm;
+        alignment: end;
+
+        Button {
+            text: "取消";
+            variant: ButtonVariant.ghost;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.cancel-requested(); }
+        }
+        if root.secondary-label != "": Button {
+            text: root.secondary-label;
+            variant: ButtonVariant.outline;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.secondary-requested(); }
+        }
+        Button {
+            text: root.busy ? "处理中..." : root.primary-label;
+            variant: ButtonVariant.default;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.primary-requested(); }
         }
     }
 }

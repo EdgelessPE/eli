@@ -1,0 +1,88 @@
+import { Tokens } from "../../theme/tokens.slint";
+
+export global WindowAdapter {
+    callback apply-window-region(length) -> bool;
+    callback install-titlebar-hit-test(length, length, length) -> bool;
+}
+
+export component EliWindow inherits Window {
+    title: root.window-title;
+    background: Tokens.color-window-background;
+
+    in property <string> window-title;
+    in property <length> titlebar-height: 36px;
+    in property <length> titlebar-left-inset: 8px;
+    in property <length> titlebar-right-inset: 40px;
+    in property <length> corner-radius: 12px;
+    private property <bool> window-region-pending: true;
+    private property <bool> titlebar-hit-test-pending: true;
+
+    callback close-requested();
+
+    Timer {
+        interval: 16ms;
+        running: root.window-region-pending;
+        triggered => {
+            root.window-region-pending = !WindowAdapter.apply-window-region(root.corner-radius);
+        }
+    }
+
+    Timer {
+        interval: 200ms;
+        running: root.titlebar-hit-test-pending;
+        triggered => {
+            root.titlebar-hit-test-pending = !WindowAdapter.install-titlebar-hit-test(
+                root.titlebar-height,
+                root.titlebar-left-inset,
+                root.titlebar-right-inset,
+            );
+        }
+    }
+
+    frame := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Tokens.color-window-background;
+        border-color: Tokens.color-window-border;
+        border-width: 1px;
+        border-radius: root.corner-radius;
+
+        @children
+
+        Text {
+            x: Tokens.spacing-lg;
+            y: 0px;
+            width: parent.width - 64px;
+            height: root.titlebar-height;
+            text: root.window-title;
+            font-size: 16px;
+            font-weight: Tokens.typography-weight-semibold;
+            vertical-alignment: center;
+            overflow: elide;
+            color: Tokens.color-window-foreground;
+        }
+
+        close-button := Rectangle {
+            x: parent.width - 32px;
+            y: 6px;
+            width: 24px;
+            height: 24px;
+            background: close-area.has-hover ? Tokens.color-window-control-hover : transparent;
+            border-radius: Tokens.radius-sm;
+
+            Image {
+                x: 5px;
+                y: 5px;
+                width: 14px;
+                height: 14px;
+                source: @image-url("close.svg");
+                colorize: Tokens.color-window-foreground;
+            }
+
+            close-area := TouchArea {
+                mouse-cursor: default;
+                clicked => { root.close-requested(); }
+            }
+        }
+    }
+}

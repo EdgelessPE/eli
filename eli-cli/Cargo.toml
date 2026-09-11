@@ -16,6 +16,9 @@ clap = { version = "4.5", features = ["derive"] }
 eli-lib = { path = "../eli-lib", default-features = false }
 indicatif = { version = "0.17", optional = true }
 
+[build-dependencies]
+slint-build = "1.17"
+
 [target.'cfg(windows)'.dependencies]
 slint = { version = "1.17", default-features = false, features = [
     "std",

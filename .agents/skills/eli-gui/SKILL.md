@@ -16,7 +16,7 @@ description: 开发、修改或审查 Eli 的 Slint GUI，特别是 Windows PE �
 ## 开始前
 
 1. 新建小型操作对话框时，先阅读 [基础对话框模板](references/gui-dialog-template.slint)。复制其结构并替换业务状态和文案，不要把插件加载器的流程直接复制到新界面。
-2. 优先复用 `ui/slintcn/theme/tokens.slint`、`ui/slintcn/components/` 和 `eli-cli/ui/` 中已有组件与 SVG 资源；只有确有跨界面复用价值时才新增组件或图标。
+2. 优先复用 `ui/theme/tokens.slint`、`ui/components/` 和对应业务目录中的已有组件与 SVG 资源；只有确有跨界面复用价值时才新增组件或图标。
 3. 需要自绘 Windows PE 标题栏时，令 Rust 宿主侧的窗口区域、原生样式和命中测试与 Slint 中的标题栏尺寸同步。标题栏仅有未被控件占用的空白区可拖动；关闭按钮、其他控件和内容区必须保持可点击。
 
 ## 状态、视觉与主题

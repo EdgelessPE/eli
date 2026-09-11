@@ -1,4 +1,6 @@
 mod command;
+#[cfg(windows)]
+mod ui;
 
 use clap::{Parser, Subcommand};
 use command::bootdisk::BootdiskCommand;

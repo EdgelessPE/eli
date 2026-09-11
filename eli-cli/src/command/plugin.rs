@@ -8,9 +8,6 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(windows)]
-mod load_gui;
-
 const NAME_COLUMN_WIDTH: usize = 32;
 const VERSION_COLUMN_WIDTH: usize = 16;
 const AUTHOR_COLUMN_WIDTH: usize = 16;
@@ -159,7 +156,7 @@ fn load(
     };
     if gui {
         #[cfg(windows)]
-        return load_gui::run(ctx, paths, options);
+        return crate::ui::plugin::load::run(ctx, paths, options);
         #[cfg(not(windows))]
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,

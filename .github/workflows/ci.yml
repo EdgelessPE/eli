@@ -6,24 +6,28 @@ on:
       - Cargo.toml
       - Cargo.lock
       - eli-cli/Cargo.toml
+      - eli-cli/build.rs
       - eli-cli/src/**
       - eli-cli/tests/**
       - eli-lib/Cargo.toml
       - eli-lib/src/**
       - eli-lib/tests/**
       - tests/e2e/**
+      - ui/**
       - .github/workflows/ci.yml
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
       - eli-cli/Cargo.toml
+      - eli-cli/build.rs
       - eli-cli/src/**
       - eli-cli/tests/**
       - eli-lib/Cargo.toml
       - eli-lib/src/**
       - eli-lib/tests/**
       - tests/e2e/**
+      - ui/**
       - .github/workflows/ci.yml
 
 permissions:

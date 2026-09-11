@@ -1,0 +1,145 @@
+import { Button, ButtonSize, ButtonVariant } from "../components/button.slint";
+import { Spin } from "../components/spin/spin.slint";
+import { Tooltip } from "../components/tooltip.slint";
+import { EliWindow } from "../components/window/window.slint";
+export { WindowAdapter } from "../components/window/window.slint";
+import { Tokens } from "../theme/tokens.slint";
+export { Theme, ThemeMode } from "../theme/tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct PluginRow {
+    label: string,
+    icon-color: color,
+    show-status: bool,
+    loading: bool,
+    detail: string,
+}
+
+export component PluginLoadWindow inherits EliWindow {
+    window-title: "加载插件";
+    width: 420px;
+    height: 248px;
+
+    in-out property <string> prompt;
+    in-out property <[PluginRow]> rows: [];
+    in-out property <bool> busy: false;
+    in-out property <bool> retry-available: false;
+    in-out property <string> tooltip-text: "";
+    in-out property <bool> tooltip-open: false;
+    in-out property <length> tooltip-anchor-y: 0px;
+    callback load-requested();
+    callback localboost-requested();
+    callback cancel-requested();
+
+    close-requested => { root.cancel-requested(); }
+
+    Text {
+        x: 16px;
+        y: root.titlebar-height;
+        width: parent.width - 32px;
+        text: root.prompt;
+        font-size: 14px;
+        color: Tokens.color-muted-foreground;
+    }
+
+    scroll := ScrollView {
+        x: 20px;
+        y: root.titlebar-height + 26px;
+        width: parent.width - 40px;
+        height: parent.height - 123px;
+        viewport-height: root.rows.length * 32px;
+
+        Rectangle {
+            width: parent.width - 28px;
+            height: root.rows.length * 32px;
+
+            for row[index] in root.rows: Rectangle {
+                y: index * 32px;
+                width: parent.width;
+                height: 28px;
+
+                Text {
+                    x: 0px;
+                    y: 3px;
+                    width: parent.width - 36px;
+                    text: row.label;
+                    font-size: 14px;
+                    overflow: elide;
+                    color: Tokens.color-window-foreground;
+                }
+
+                Spin {
+                    x: parent.width - 20px;
+                    y: 5px;
+                    running: row.loading;
+                }
+
+                if row.show-status && !row.loading: Rectangle {
+                    x: parent.width - 16px;
+                    y: 6px;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 6px;
+                    background: row.icon-color;
+                }
+
+                hover := TouchArea {
+                    x: parent.width - 64px;
+                    width: 64px;
+                    height: parent.height;
+                    changed has-hover => {
+                        if (self.has-hover && row.detail != "") {
+                            root.tooltip-text = row.detail;
+                            root.tooltip-anchor-y = scroll.y + parent.y + scroll.viewport-y;
+                            root.tooltip-open = true;
+                        } else if (!self.has-hover) {
+                            root.tooltip-open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        x: 20px;
+        y: parent.height - 48px;
+        width: parent.width - 40px;
+        height: 36px;
+        spacing: 8px;
+        alignment: end;
+
+        Button {
+            text: "取消";
+            variant: ButtonVariant.ghost;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.cancel-requested(); }
+        }
+
+        Button {
+            text: "LocalBoost 加载";
+            variant: ButtonVariant.outline;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.localboost-requested(); }
+        }
+
+        Button {
+            text: root.retry-available ? "重试" : "加载";
+            variant: ButtonVariant.default;
+            size: ButtonSize.default;
+            disabled: root.busy;
+            clicked => { root.load-requested(); }
+        }
+    }
+
+    Tooltip {
+        x: 20px;
+        width: parent.width - 40px;
+        text: root.tooltip-text;
+        open: root.tooltip-open;
+        anchor-y: root.tooltip-anchor-y;
+        max-bottom: parent.height - 60px;
+    }
+}

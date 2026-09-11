@@ -28,6 +28,14 @@ export global Tokens {
         Theme.mode == ThemeMode.light ? Palette.neutral-100 : Palette.neutral-900;
     out property <color> color-card-foreground:
         Theme.mode == ThemeMode.light ? Palette.neutral-900 : Palette.neutral-50;
+    out property <color> color-window-background:
+        Theme.mode == ThemeMode.light ? #ffffff : #111827;
+    out property <color> color-window-foreground:
+        Theme.mode == ThemeMode.light ? #111827 : #f9fafb;
+    out property <color> color-window-border:
+        Theme.mode == ThemeMode.light ? #d1d5db : #374151;
+    out property <color> color-window-control-hover:
+        Theme.mode == ThemeMode.light ? #f3f4f6 : #374151;
     // 浮层需要比页面表面更明确的层次，不能复用普通卡片表面。
     out property <color> color-floating-surface:
         Theme.mode == ThemeMode.light ? Palette.neutral-50 : #1f2937;
@@ -47,6 +55,7 @@ export global Tokens {
         Theme.mode == ThemeMode.light ? Palette.neutral-500 : Palette.neutral-400;
     out property <color> color-destructive:        Palette.red-400;
     out property <color> color-affirm:             Palette.green-400;
+    out property <color> color-progress:           Palette.blue-500;
     // Subtle hover surface for outline/ghost controls — shadcn's "accent".
     out property <color> color-accent:
         Theme.mode == ThemeMode.light ? Palette.alpha-b-08-on-light : Palette.alpha-w-08;

@@ -1,0 +1,45 @@
+import { Tokens } from "../../theme/tokens.slint";
+
+export component Spin inherits Rectangle {
+    in property <bool> running: false;
+    in property <length> size: 18px;
+    in property <color> indicator-color: Tokens.color-progress;
+    private property <int> frame: 0;
+
+    width: root.size;
+    height: root.size;
+    visible: root.running;
+
+    Timer {
+        interval: 33ms;
+        running: root.running;
+        triggered => {
+            root.frame = Math.mod(root.frame + 1, 24);
+        }
+    }
+
+    if root.frame == 0: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-0.svg"); colorize: root.indicator-color; }
+    if root.frame == 1: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-1.svg"); colorize: root.indicator-color; }
+    if root.frame == 2: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-2.svg"); colorize: root.indicator-color; }
+    if root.frame == 3: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-3.svg"); colorize: root.indicator-color; }
+    if root.frame == 4: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-4.svg"); colorize: root.indicator-color; }
+    if root.frame == 5: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-5.svg"); colorize: root.indicator-color; }
+    if root.frame == 6: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-6.svg"); colorize: root.indicator-color; }
+    if root.frame == 7: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-7.svg"); colorize: root.indicator-color; }
+    if root.frame == 8: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-8.svg"); colorize: root.indicator-color; }
+    if root.frame == 9: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-9.svg"); colorize: root.indicator-color; }
+    if root.frame == 10: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-10.svg"); colorize: root.indicator-color; }
+    if root.frame == 11: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-11.svg"); colorize: root.indicator-color; }
+    if root.frame == 12: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-12.svg"); colorize: root.indicator-color; }
+    if root.frame == 13: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-13.svg"); colorize: root.indicator-color; }
+    if root.frame == 14: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-14.svg"); colorize: root.indicator-color; }
+    if root.frame == 15: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-15.svg"); colorize: root.indicator-color; }
+    if root.frame == 16: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-16.svg"); colorize: root.indicator-color; }
+    if root.frame == 17: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-17.svg"); colorize: root.indicator-color; }
+    if root.frame == 18: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-18.svg"); colorize: root.indicator-color; }
+    if root.frame == 19: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-19.svg"); colorize: root.indicator-color; }
+    if root.frame == 20: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-20.svg"); colorize: root.indicator-color; }
+    if root.frame == 21: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-21.svg"); colorize: root.indicator-color; }
+    if root.frame == 22: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-22.svg"); colorize: root.indicator-color; }
+    if root.frame == 23: Image { width: 100%; height: 100%; source: @image-url("frames/arco-spin-23.svg"); colorize: root.indicator-color; }
+}
