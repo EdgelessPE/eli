@@ -6,7 +6,6 @@ use eli_lib::dependency::RuntimeEnvironment;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::collections::HashMap;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -23,6 +22,7 @@ mod ui {
     slint::slint! {
         import { Button, ButtonSize, ButtonVariant } from "ui/slintcn/components/button.slint";
         import { Tooltip } from "ui/slintcn/components/tooltip.slint";
+        import { Tokens } from "ui/slintcn/theme/tokens.slint";
         import { Palette, ScrollView } from "std-widgets.slint";
 
         export struct PluginRow {
@@ -34,7 +34,7 @@ mod ui {
         }
 
         export component PluginLoadWindow inherits Window {
-            title: "插件热加载工具";
+            title: "加载插件";
             width: 420px;
             height: 248px;
             background: root.surface-color;
@@ -53,7 +53,6 @@ mod ui {
             property <color> surface-color: root.dark-mode ? #111827 : #ffffff;
             property <color> text-color: root.dark-mode ? #f9fafb : #111827;
             property <color> border-color: root.dark-mode ? #374151 : #d1d5db;
-            property <color> divider-color: root.dark-mode ? #374151 : #e5e7eb;
             property <color> close-hover-color: root.dark-mode ? #374151 : #f3f4f6;
             callback load-requested();
             callback localboost-requested();
@@ -96,23 +95,23 @@ mod ui {
                     y: 0px;
                     width: parent.width - 64px;
                     height: 36px;
-                    text: "插件热加载工具";
-                    font-size: 14px;
+                    text: "加载插件";
+                    font-size: 16px;
                     font-weight: 600;
                     vertical-alignment: center;
                     color: root.text-color;
                 }
                 close-button := Rectangle {
-                    x: parent.width - 40px;
-                    y: 2px;
-                    width: 32px;
-                    height: 32px;
+                    x: parent.width - 32px;
+                    y: 6px;
+                    width: 24px;
+                    height: 24px;
                     background: close-area.has-hover ? root.close-hover-color : transparent;
                     border-radius: 6px;
 
                     Path {
-                        x: 9px;
-                        y: 9px;
+                        x: 5px;
+                        y: 5px;
                         width: 14px;
                         height: 14px;
                         viewbox-x: 0;
@@ -130,26 +129,19 @@ mod ui {
                         clicked => { root.cancel-requested(); }
                     }
                 }
-                Rectangle {
-                    x: 0px;
-                    y: 36px;
-                    width: parent.width;
-                    height: 1px;
-                    background: root.divider-color;
-                }
                 Text {
-                    x: 20px;
-                    y: 53px;
-                    width: parent.width - 40px;
+                    x: 16px;
+                    y: 36px;
+                    width: parent.width - 32px;
                     text: root.prompt;
                     font-size: 14px;
-                    color: root.text-color;
+                    color: Tokens.color-muted-foreground;
                 }
                 scroll := ScrollView {
                     x: 20px;
-                    y: 79px;
+                    y: 62px;
                     width: parent.width - 40px;
-                    height: parent.height - 140px;
+                    height: parent.height - 123px;
                     viewport-height: root.rows.length * 32px;
                     Rectangle {
                         width: parent.width - 28px;
@@ -158,7 +150,7 @@ mod ui {
                             y: index * 32px;
                             width: parent.width;
                             height: 28px;
-                            Text { x: 0; y: 3px; width: parent.width - 36px; text: row.label; font-size: 16px; font-weight: 600; overflow: elide; color: root.text-color; }
+                            Text { x: 0; y: 3px; width: parent.width - 36px; text: row.label; font-size: 14px; overflow: elide; color: root.text-color; }
                             if row.loading: Rectangle {
                                 x: parent.width - 20px;
                                 y: 5px;
@@ -383,7 +375,7 @@ pub(super) fn run(ctx: Arc<Ctx>, inputs: Vec<PathBuf>, options: LoadOptions) -> 
     install_software_backend()?;
     let window = PluginLoadWindow::new().map_err(io::Error::other)?;
     let state = Arc::new(Mutex::new(GuiState::new(inputs.clone())));
-    window.set_prompt(input_prompt(&inputs).into());
+    window.set_prompt(input_prompt().into());
     update_rows(&window, &state);
     configure_cancel(&window);
     configure_window_region(&window);
@@ -409,20 +401,8 @@ fn install_software_backend() -> io::Result<()> {
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
-fn input_prompt(inputs: &[PathBuf]) -> &'static str {
-    let directory_count = inputs
-        .iter()
-        .filter(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()))
-        .count();
-    let file_count = inputs.len().saturating_sub(directory_count);
-
-    match (file_count, directory_count) {
-        (1, 0) => "是否将这个文件作为插件包加载？",
-        (_, 0) => "是否将这些文件作为插件包加载？",
-        (0, 1) => "是否加载此目录中的插件包？",
-        (0, _) => "是否加载这些目录中的插件包？",
-        _ => "是否加载这些文件和目录中的插件包？",
-    }
+fn input_prompt() -> &'static str {
+    "是否确认加载如下插件？"
 }
 
 fn configure_cancel(window: &PluginLoadWindow) {
@@ -623,7 +603,7 @@ fn is_titlebar_hit_in_rect(window_rect: RECT, lparam: LPARAM, hit_test: Titlebar
     let screen_y = (lparam >> 16) as i16 as i32;
     let titlebar_height = logical_to_physical(36, hit_test.scale_factor);
     let left_inset = logical_to_physical(8, hit_test.scale_factor);
-    let close_button_inset = logical_to_physical(48, hit_test.scale_factor);
+    let close_button_inset = logical_to_physical(40, hit_test.scale_factor);
     screen_x >= window_rect.left + left_inset
         && screen_x < window_rect.left + hit_test.width - close_button_inset
         && screen_y >= window_rect.top
@@ -784,32 +764,13 @@ mod tests {
     use eli_lib::command::plugin::LoadResult;
 
     #[test]
-    fn input_prompt_describes_missing_paths_as_files() {
-        assert_eq!(
-            input_prompt(&[PathBuf::from("plugin.7z")]),
-            "是否将这个文件作为插件包加载？"
-        );
+    fn input_prompt_asks_for_plugin_confirmation() {
+        assert_eq!(input_prompt(), "是否确认加载如下插件？");
     }
 
     #[test]
     fn loading_prompt_uses_the_list_count() {
         assert_eq!(loading_prompt(3), "正在加载 3 个插件包...");
-    }
-
-    #[test]
-    fn input_prompt_describes_mixed_file_and_directory_inputs() {
-        assert_eq!(
-            input_prompt(&[PathBuf::from("plugin.7z"), PathBuf::from(".")]),
-            "是否加载这些文件和目录中的插件包？"
-        );
-    }
-
-    #[test]
-    fn directory_prompt_does_not_embed_the_directory_name() {
-        assert_eq!(
-            input_prompt(&[PathBuf::from(".")]),
-            "是否加载此目录中的插件包？"
-        );
     }
 
     #[test]
@@ -840,12 +801,12 @@ mod tests {
 
         assert!(is_titlebar_hit_in_rect(
             rect,
-            screen_position_lparam(160, 220),
+            screen_position_lparam(160, 235),
             hit_test
         ));
         assert!(!is_titlebar_hit_in_rect(
             rect,
-            screen_position_lparam(160, 250),
+            screen_position_lparam(160, 236),
             hit_test
         ));
         assert!(!is_titlebar_hit_in_rect(
