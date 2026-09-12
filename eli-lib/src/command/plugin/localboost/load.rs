@@ -15,16 +15,20 @@ use std::process::Command;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(windows, test))]
+use super::repository;
 #[cfg(windows)]
-use super::repository::{self, SelectionMode};
+use super::repository::SelectionMode;
 #[cfg(windows)]
 use super::runtime::{LocalBoostLock, RuntimePaths, commit_loaded, is_loaded, safe_component};
 
+#[cfg(any(windows, test))]
+use super::super::load::plugin_name;
 #[cfg(windows)]
 use super::super::load::{
     FileSnapshot, MergeTransaction, ProcessPublishLock, copy_file_replacing, is_reparse_point,
-    next_counter, optional_symlink_metadata, plugin_name, reject_reparse_points, replace_file,
-    run_checked, with_merge_transaction, write_manifest,
+    next_counter, optional_symlink_metadata, reject_reparse_points, replace_file, run_checked,
+    with_merge_transaction, write_manifest,
 };
 
 #[cfg(windows)]

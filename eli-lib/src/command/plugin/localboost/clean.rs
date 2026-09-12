@@ -4,7 +4,9 @@ use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
 

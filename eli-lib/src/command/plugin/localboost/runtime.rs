@@ -1,14 +1,14 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use std::io;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 #[cfg(windows)]
 use std::env;
 #[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
 use std::fs;
+#[cfg(windows)]
+use std::io;
 
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +121,7 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> io::Result<String> {
     if !bytes.len().is_multiple_of(2) {
         return Err(invalid_text("UTF-16 text has an odd byte length"));
     }
-    let values = bytes.chunks_exact(2).map(|pair| {
+    let values = bytes.as_chunks::<2>().0.iter().map(|pair| {
         if little_endian {
             u16::from_le_bytes([pair[0], pair[1]])
         } else {
