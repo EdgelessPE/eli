@@ -260,6 +260,7 @@ fn with_repository_selection<T>(
     ctx: &Ctx,
     mut operation: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
+    let _ = ctx;
     loop {
         match operation() {
             Ok(value) => return Ok(value),

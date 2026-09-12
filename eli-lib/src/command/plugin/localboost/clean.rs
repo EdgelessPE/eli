@@ -398,6 +398,7 @@ fn remove_file_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn validate_plugin_name(plugin: &OsStr) -> io::Result<()> {
     if super::runtime::safe_component(plugin) {
         Ok(())
