@@ -1,6 +1,7 @@
 use super::warn_automatic_bootdisk_selection;
 use clap::{Subcommand, ValueEnum};
 use eli_lib::Ctx;
+use eli_lib::command::plugin::localboost::clean::CleanTarget;
 use eli_lib::command::plugin::{LoadOptions, LoadStatus, LocalBoostHandling, PluginAttribute};
 use std::ffi::OsString;
 use std::io;
@@ -67,6 +68,21 @@ pub(crate) enum LocalBoostCommand {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
+    /// Load every existing unit from the selected repository.
+    Startup,
+    /// Remove one LocalBoost unit or explicitly clear every repository.
+    Clean {
+        /// Repository directory name of the plugin to remove.
+        #[arg(
+            value_name = "PLUGIN",
+            required_unless_present = "all",
+            conflicts_with = "all"
+        )]
+        plugin: Option<OsString>,
+        /// Remove all LocalBoost repositories on this computer.
+        #[arg(long, required_unless_present = "plugin", conflicts_with = "plugin")]
+        all: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -122,14 +138,158 @@ pub(crate) fn execute(ctx: Arc<Ctx>, command: PluginCommand) -> io::Result<()> {
         } => load(ctx, paths, gui, recursive, jobs, localboost),
         PluginCommand::Localboost { command } => match command {
             LocalBoostCommand::Load { path } => localboost_load(ctx.as_ref(), &path),
+            LocalBoostCommand::Startup => localboost_startup(ctx.as_ref()),
+            LocalBoostCommand::Clean { plugin, all } => {
+                let target = if all {
+                    CleanTarget::All
+                } else {
+                    CleanTarget::Plugin(plugin.expect("Clap requires PLUGIN or --all"))
+                };
+                localboost_clean(ctx.as_ref(), target)
+            }
         },
     }
 }
 
 fn localboost_load(ctx: &Ctx, path: &Path) -> io::Result<()> {
-    eli_lib::command::plugin::localboost::load::load(ctx, path)?;
-    println!("Loaded with LocalBoost {}", path.display());
+    let status = with_repository_selection(ctx, || {
+        eli_lib::command::plugin::localboost::load::load(ctx, path)
+    })?;
+    match status {
+        eli_lib::command::plugin::localboost::load::LoadStatus::Loaded => {
+            println!("Loaded with LocalBoost {}", path.display())
+        }
+        eli_lib::command::plugin::localboost::load::LoadStatus::LoadedWithCompatibilityWarning => {
+            println!("Loaded with LocalBoost {}", path.display());
+            print_localboost_compatibility_warning(path.as_os_str());
+        }
+        eli_lib::command::plugin::localboost::load::LoadStatus::AlreadyLoaded => {
+            println!("Already loaded with LocalBoost {}", path.display())
+        }
+    }
     Ok(())
+}
+
+fn localboost_startup(ctx: &Ctx) -> io::Result<()> {
+    let summary = with_repository_selection(ctx, || {
+        eli_lib::command::plugin::localboost::startup::startup(ctx)
+    })?;
+    for result in &summary.results {
+        match &result.result {
+            Ok(eli_lib::command::plugin::localboost::load::LoadStatus::Loaded) => {
+                println!("Loaded LocalBoost unit {}", result.plugin.to_string_lossy())
+            }
+            Ok(
+                eli_lib::command::plugin::localboost::load::LoadStatus::LoadedWithCompatibilityWarning,
+            ) => {
+                println!("Loaded LocalBoost unit {}", result.plugin.to_string_lossy());
+                print_localboost_compatibility_warning(&result.plugin);
+            }
+            Ok(eli_lib::command::plugin::localboost::load::LoadStatus::AlreadyLoaded) => println!(
+                "Already loaded LocalBoost unit {}",
+                result.plugin.to_string_lossy()
+            ),
+            Err(error) => eprintln!(
+                "Failed LocalBoost unit {}: {error}",
+                result.plugin.to_string_lossy()
+            ),
+        }
+    }
+    println!(
+        "{} loaded, {} already loaded, {} failed",
+        summary.loaded(),
+        summary.already_loaded(),
+        summary.failed()
+    );
+    if summary.is_success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} LocalBoost unit(s) failed during startup",
+            summary.failed()
+        )))
+    }
+}
+
+fn print_localboost_compatibility_warning(plugin: &std::ffi::OsStr) {
+    eprintln!(
+        "warning: LocalBoost plugin {} contains BAT/CMD files in a dependency directory and may not work correctly",
+        plugin.to_string_lossy()
+    );
+}
+
+fn localboost_clean(ctx: &Ctx, target: CleanTarget) -> io::Result<()> {
+    let summary = with_repository_selection(ctx, || {
+        eli_lib::command::plugin::localboost::clean::clean(ctx, target.clone())
+    })?;
+    for result in &summary.results {
+        let label = result
+            .plugin
+            .as_ref()
+            .map(|plugin| plugin.to_string_lossy().into_owned())
+            .unwrap_or_else(|| result.repository.display().to_string());
+        match &result.result {
+            Ok(()) => println!("Cleaned LocalBoost {label}"),
+            Err(error) => eprintln!("Failed to clean LocalBoost {label}: {error}"),
+        }
+    }
+    if summary.requires_restart() {
+        eprintln!(
+            "LocalBoost script side effects cannot be fully reversed; restart Windows PE to complete cleanup."
+        );
+    }
+    if summary.runtime_cleanup_incomplete() {
+        eprintln!("Some current-session LocalBoost files could not be safely removed.");
+    }
+    println!(
+        "{} cleaned, {} failed",
+        summary.succeeded(),
+        summary.failed()
+    );
+    if summary.is_success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} LocalBoost cleanup operation(s) failed",
+            summary.failed()
+        )))
+    }
+}
+
+fn with_repository_selection<T>(
+    ctx: &Ctx,
+    mut operation: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let Some(required) =
+                    eli_lib::command::plugin::localboost::repository::selection_required(&error)
+                else {
+                    return Err(error);
+                };
+                #[cfg(windows)]
+                {
+                    let selected = crate::ui::plugin::localboost_repository::select(
+                        required.candidates().to_vec(),
+                    )?
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "LocalBoost repository selection was cancelled",
+                        )
+                    })?;
+                    eli_lib::command::plugin::localboost::repository::confirm(ctx, &selected)?;
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = required;
+                    return Err(error);
+                }
+            }
+        }
+    }
 }
 
 fn load(
@@ -163,12 +323,21 @@ fn load(
             "the plugin load GUI is only available on Windows",
         ));
     }
-    let summary = eli_lib::command::plugin::load(ctx.as_ref(), &paths, options)?;
+    let summary = with_repository_selection(ctx.as_ref(), || {
+        eli_lib::command::plugin::load(ctx.as_ref(), &paths, options.clone())
+    })?;
     for result in &summary.results {
         match &result.result {
             Ok(LoadStatus::Loaded) => println!("Loaded {}", result.path.display()),
             Ok(LoadStatus::LoadedWithLocalBoost) => {
                 println!("Loaded with LocalBoost {}", result.path.display())
+            }
+            Ok(LoadStatus::LoadedWithLocalBoostCompatibilityWarning) => {
+                println!("Loaded with LocalBoost {}", result.path.display());
+                print_localboost_compatibility_warning(result.path.as_os_str());
+            }
+            Ok(LoadStatus::AlreadyLoadedWithLocalBoost) => {
+                println!("Already loaded with LocalBoost {}", result.path.display())
             }
             Ok(LoadStatus::SkippedLocalBoost) => {
                 println!("Skipped LocalBoost package {}", result.path.display())

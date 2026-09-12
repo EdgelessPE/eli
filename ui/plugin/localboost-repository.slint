@@ -1,0 +1,156 @@
+import { Button, ButtonSize, ButtonVariant } from "../components/button.slint";
+import { Spin } from "../components/spin/spin.slint";
+import { EliWindow } from "../components/window/window.slint";
+export { WindowAdapter } from "../components/window/window.slint";
+import { Tokens } from "../theme/tokens.slint";
+export { Theme, ThemeMode } from "../theme/tokens.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct RepositoryRow {
+    mount-point: string,
+    label: string,
+    available: string,
+    reason: string,
+    selectable: bool,
+    has-repository: bool,
+}
+
+export component LocalBoostRepositoryWindow inherits EliWindow {
+    window-title: "选择 LocalBoost 仓库";
+    width: 520px;
+    height: 360px;
+
+    in property <[RepositoryRow]> rows: [];
+    in-out property <int> selected-index: -1;
+    in-out property <bool> busy: false;
+    in-out property <string> error-text: "";
+    callback confirm-requested(int);
+    callback cancel-requested();
+
+    close-requested => { root.cancel-requested(); }
+
+    VerticalLayout {
+        x: Tokens.spacing-xl;
+        y: root.titlebar-height + Tokens.spacing-md;
+        width: parent.width - 2 * Tokens.spacing-xl;
+        height: parent.height - root.titlebar-height - Tokens.spacing-xl;
+        spacing: Tokens.spacing-md;
+
+        Text {
+            text: "选择用于持久保存插件的分区。系统盘、启动盘及空间不足的分区不可选。";
+            color: Tokens.color-muted-foreground;
+            font-size: Tokens.typography-body-sm-size;
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
+
+        ListView {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+
+            for row[index] in root.rows: row-item := Rectangle {
+                height: 58px;
+                background: index == root.selected-index
+                    ? Tokens.color-surface-2
+                    : hover.has-hover && row.selectable
+                        ? Tokens.color-surface-1
+                        : transparent;
+                border-width: index == root.selected-index ? 1px : 0px;
+                border-color: Tokens.color-ring;
+                border-radius: Tokens.radius-md;
+                opacity: row.selectable ? 1.0 : 0.55;
+
+                selection-mark := Rectangle {
+                    x: Tokens.spacing-md;
+                    y: 20px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: row.selectable
+                        ? Tokens.color-window-foreground
+                        : Tokens.color-muted-foreground;
+                    background: index == root.selected-index
+                        ? Tokens.color-window-foreground
+                        : transparent;
+
+                    if index == root.selected-index: Rectangle {
+                        x: 5px;
+                        y: 5px;
+                        width: 4px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Tokens.color-window-background;
+                    }
+                }
+
+                Text {
+                    x: 40px;
+                    y: 8px;
+                    width: parent.width - 52px;
+                    text: row.label == ""
+                        ? row.mount-point
+                        : row.mount-point + "  " + row.label;
+                    color: Tokens.color-window-foreground;
+                    font-size: Tokens.typography-body-size;
+                    font-weight: Tokens.typography-weight-medium;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: 40px;
+                    y: 31px;
+                    width: parent.width - 52px;
+                    text: row.reason != ""
+                        ? row.reason
+                        : row.available + (row.has-repository ? " · 已有仓库" : " · 可创建仓库");
+                    color: row.reason != ""
+                        ? Tokens.color-destructive
+                        : Tokens.color-muted-foreground;
+                    font-size: Tokens.typography-label-size;
+                    overflow: elide;
+                }
+
+                hover := TouchArea {
+                    enabled: row.selectable && !root.busy;
+                    mouse-cursor: self.enabled ? pointer : default;
+                    clicked => { root.selected-index = index; }
+                }
+            }
+        }
+
+        Text {
+            visible: root.error-text != "";
+            text: root.error-text;
+            color: Tokens.color-destructive;
+            font-size: Tokens.typography-body-sm-size;
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
+
+        HorizontalLayout {
+            height: Tokens.density-button-default;
+            spacing: Tokens.spacing-sm;
+            alignment: end;
+
+            Spin {
+                visible: root.busy;
+                running: root.busy;
+            }
+            Button {
+                text: "取消";
+                variant: ButtonVariant.ghost;
+                size: ButtonSize.default;
+                disabled: root.busy;
+                clicked => { root.cancel-requested(); }
+            }
+            Button {
+                text: root.busy ? "正在确认..." : "使用此分区";
+                variant: ButtonVariant.default;
+                size: ButtonSize.default;
+                disabled: root.busy || root.selected-index < 0;
+                clicked => { root.confirm-requested(root.selected-index); }
+            }
+        }
+    }
+}

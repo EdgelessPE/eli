@@ -3,8 +3,6 @@ use crate::Ctx;
 use crate::dependency::ProgramDependency;
 use crate::dependency::RuntimeEnvironment;
 #[cfg(windows)]
-use std::env;
-#[cfg(windows)]
 use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::fs;
@@ -18,24 +16,36 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(windows)]
+use super::repository::{self, SelectionMode};
+#[cfg(windows)]
+use super::runtime::{LocalBoostLock, RuntimePaths, commit_loaded, is_loaded, safe_component};
+
+#[cfg(windows)]
 use super::super::load::{
     FileSnapshot, MergeTransaction, ProcessPublishLock, copy_file_replacing, is_reparse_point,
-    merge_move, next_counter, optional_symlink_metadata, plugin_name, reject_reparse_points,
-    replace_file, run_checked, with_merge_transaction, write_manifest,
+    next_counter, optional_symlink_metadata, plugin_name, reject_reparse_points, replace_file,
+    run_checked, with_merge_transaction, write_manifest,
 };
 
 #[cfg(windows)]
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadStatus {
+    Loaded,
+    LoadedWithCompatibilityWarning,
+    AlreadyLoaded,
+}
+
 /// 将一个 LocalBoost 插件包安装到已选择的仓库并加载到当前环境。
-pub fn load(ctx: &Ctx, source: &Path) -> io::Result<()> {
+pub fn load(ctx: &Ctx, source: &Path) -> io::Result<LoadStatus> {
     ctx.dependencies()
         .require_environment(RuntimeEnvironment::WindowsPE)?;
     load_on_supported_platform(ctx, source)
 }
 
 #[cfg(windows)]
-fn load_on_supported_platform(ctx: &Ctx, source: &Path) -> io::Result<()> {
+fn load_on_supported_platform(ctx: &Ctx, source: &Path) -> io::Result<LoadStatus> {
     let programs = ctx.dependencies().require_programs(&[
         ProgramDependency::SevenZip,
         ProgramDependency::Cmd,
@@ -50,7 +60,7 @@ fn load_on_supported_platform(ctx: &Ctx, source: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn load_on_supported_platform(_ctx: &Ctx, _source: &Path) -> io::Result<()> {
+fn load_on_supported_platform(_ctx: &Ctx, _source: &Path) -> io::Result<LoadStatus> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "LocalBoost loading is only implemented for Windows PE",
@@ -63,16 +73,7 @@ pub(crate) fn load_resolved(
     seven_zip: &Path,
     cmd: &Path,
     pecmd: &Path,
-) -> io::Result<()> {
-    if !extension_is(source, "7zl") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "LocalBoost package must use the .7zl extension: {}",
-                source.display()
-            ),
-        ));
-    }
+) -> io::Result<LoadStatus> {
     if !fs::metadata(source).is_ok_and(|metadata| metadata.is_file()) {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -80,15 +81,30 @@ pub(crate) fn load_resolved(
         ));
     }
     let name = plugin_name(source)?;
+    if !safe_component(&name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "LocalBoost package has an unsafe plugin name: {}",
+                source.display()
+            ),
+        ));
+    }
     let paths = RuntimePaths::detect()?;
-    let repository = selected_repository(&paths.selection_file, &paths.system_drive)?;
+    let repository = repository::select(&paths, SelectionMode::CreateIfMissing)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no LocalBoost repository"))?;
+    let lifecycle_lock = LocalBoostLock::new()?;
+    let _lifecycle_guard = lifecycle_lock.acquire()?;
+    if is_loaded(&paths, &name) {
+        return Ok(LoadStatus::AlreadyLoaded);
+    }
     reject_existing_reparse_ancestors(&repository)?;
     fs::create_dir_all(&repository)?;
     reject_directory_reparse_point(&repository)?;
     let staging_root = repository
         .parent()
         .ok_or_else(|| io::Error::other("LocalBoost repository has no parent directory"))?
-        .join(".eli-plugin-release");
+        .join(".eli-staging");
     reject_existing_reparse_ancestors(&staging_root)?;
     fs::create_dir_all(&staging_root)?;
     reject_directory_reparse_point(&staging_root)?;
@@ -111,20 +127,15 @@ pub(crate) fn load_resolved(
 
         let unit = repository.join(&name);
         add_local_boost_markers(&staging, &unit)?;
-        let scripts = {
-            let lock = ProcessPublishLock::new()?;
-            let _guard = lock.acquire()?;
-            let unit_guard = CreatedDirectoryGuard::new(&unit)?;
-            reject_directory_reparse_point(&unit)?;
-            let scripts = with_merge_transaction(&staging_root, |repository_transaction| {
-                merge_directory(&staging, &unit, repository_transaction)?;
-                reject_reparse_points(&unit)?;
-                publish(&name, &unit, &paths, cmd)
-            })?;
-            unit_guard.commit();
-            scripts
-        };
-        run_and_archive_scripts(&scripts, &paths.edgeless, &paths.installers, cmd, pecmd)
+        let unit_guard = CreatedDirectoryGuard::new(&unit)?;
+        reject_directory_reparse_point(&unit)?;
+        let status = with_merge_transaction(&staging_root, |repository_transaction| {
+            merge_directory(&staging, &unit, repository_transaction)?;
+            reject_reparse_points(&unit)?;
+            restore_unit(&name, &unit, &paths, cmd, pecmd)
+        })?;
+        unit_guard.commit();
+        Ok(status)
     })();
     if staging.exists() {
         let _ = fs::remove_dir_all(&staging);
@@ -133,7 +144,15 @@ pub(crate) fn load_resolved(
 }
 
 #[cfg(windows)]
-fn reject_directory_reparse_point(path: &Path) -> io::Result<()> {
+pub(crate) fn prepare_repository() -> io::Result<()> {
+    let paths = RuntimePaths::detect()?;
+    repository::select(&paths, SelectionMode::CreateIfMissing)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no LocalBoost repository"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn reject_directory_reparse_point(path: &Path) -> io::Result<()> {
     if optional_symlink_metadata(path)?
         .as_ref()
         .is_some_and(is_reparse_point)
@@ -148,7 +167,7 @@ fn reject_directory_reparse_point(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn reject_existing_reparse_ancestors(path: &Path) -> io::Result<()> {
+pub(crate) fn reject_existing_reparse_ancestors(path: &Path) -> io::Result<()> {
     for ancestor in path.ancestors() {
         if optional_symlink_metadata(ancestor)?
             .as_ref()
@@ -164,98 +183,6 @@ fn reject_existing_reparse_ancestors(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(windows)]
-#[derive(Debug)]
-struct RuntimePaths {
-    edgeless: PathBuf,
-    installers: PathBuf,
-    system_drive: PathBuf,
-    plugin_info: PathBuf,
-    local_boost: PathBuf,
-    selection_file: PathBuf,
-}
-
-#[cfg(windows)]
-impl RuntimePaths {
-    fn detect() -> io::Result<Self> {
-        let program_files = env::var_os("ProgramFiles")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ProgramFiles is not set"))?;
-        let system_drive = env::var_os("SystemDrive")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemDrive is not set"))?;
-        let system_drive = PathBuf::from(system_drive);
-        let users = system_drive.join("Users");
-        let local_boost = users.join("LocalBoost");
-        let edgeless = PathBuf::from(program_files).join("Edgeless");
-        Ok(Self {
-            installers: edgeless.join("安装程序"),
-            edgeless,
-            system_drive,
-            plugin_info: users.join("Plugins_info"),
-            selection_file: local_boost.join("repoPart.txt"),
-            local_boost,
-        })
-    }
-}
-
-#[cfg(windows)]
-fn selected_repository(selection_file: &Path, system_drive: &Path) -> io::Result<PathBuf> {
-    let selection = fs::read_to_string(selection_file).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "failed to read the LocalBoost repository selection {}: {error}",
-                selection_file.display()
-            ),
-        )
-    })?;
-    let repository = repository_from_selection(&selection).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "invalid LocalBoost repository selection in {}",
-                selection_file.display()
-            ),
-        )
-    })?;
-    if matches!(
-        (drive_letter(&repository), drive_letter(system_drive)),
-        (Some(repository_drive), Some(system_drive)) if repository_drive == system_drive
-    ) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LocalBoost repository cannot use the Windows PE system drive",
-        ));
-    }
-    Ok(repository)
-}
-
-#[cfg(any(windows, test))]
-fn repository_from_selection(selection: &str) -> Option<PathBuf> {
-    let selection = selection.trim().trim_matches('"');
-    let mut characters = selection.chars();
-    let letter = characters.next()?;
-    if !letter.is_ascii_alphabetic() {
-        return None;
-    }
-    let remainder = characters.as_str();
-    if !remainder.is_empty() && remainder != ":" {
-        return None;
-    }
-    Some(PathBuf::from(format!(
-        "{}:\\Edgeless\\BoostRepo",
-        letter.to_ascii_uppercase()
-    )))
-}
-
-#[cfg(windows)]
-fn drive_letter(path: &Path) -> Option<char> {
-    let value = path.as_os_str().to_string_lossy();
-    let mut characters = value.chars();
-    let letter = characters.next()?;
-    (letter.is_ascii_alphabetic() && characters.next() == Some(':'))
-        .then(|| letter.to_ascii_uppercase())
 }
 
 #[cfg(windows)]
@@ -295,6 +222,45 @@ fn add_local_boost_markers(staging: &Path, unit: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn restore_unit(
+    plugin_name: &OsStr,
+    unit: &Path,
+    paths: &RuntimePaths,
+    cmd: &Path,
+    pecmd: &Path,
+) -> io::Result<LoadStatus> {
+    if is_loaded(paths, plugin_name) {
+        return Ok(LoadStatus::AlreadyLoaded);
+    }
+    if !safe_unit_directory(unit)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "LocalBoost unit is not a safe directory: {}",
+                unit.display()
+            ),
+        ));
+    }
+    reject_reparse_points(unit)?;
+    let compatibility_warning = contains_nested_batch_script(unit)?;
+    // 锁顺序固定为 LocalBoost 生命周期锁在外、普通插件发布锁在内。
+    let publish_lock = ProcessPublishLock::new()?;
+    let _publish_guard = publish_lock.acquire()?;
+    publish_and_run(plugin_name, unit, paths, cmd, pecmd)?;
+    Ok(if compatibility_warning {
+        LoadStatus::LoadedWithCompatibilityWarning
+    } else {
+        LoadStatus::Loaded
+    })
+}
+
+#[cfg(windows)]
+fn safe_unit_directory(unit: &Path) -> io::Result<bool> {
+    Ok(fs::metadata(unit).is_ok_and(|metadata| metadata.is_dir())
+        && unit.file_name().is_some_and(super::runtime::safe_component))
 }
 
 #[cfg(windows)]
@@ -371,12 +337,13 @@ fn inventory(unit: &Path) -> io::Result<Inventory> {
 }
 
 #[cfg(windows)]
-fn publish(
+fn publish_and_run(
     plugin_name: &OsStr,
     unit: &Path,
     paths: &RuntimePaths,
     cmd: &Path,
-) -> io::Result<Vec<PathBuf>> {
+    pecmd: &Path,
+) -> io::Result<()> {
     fs::create_dir_all(&paths.edgeless)?;
     fs::create_dir_all(&paths.installers)?;
     for directory in ["Batch", "Dir", "File"] {
@@ -384,9 +351,21 @@ fn publish(
     }
     fs::create_dir_all(&paths.local_boost)?;
     let inventory = inventory(unit)?;
-    let counter = next_counter(&paths.local_boost.join("Counter.txt"))?;
+    let counter_path = paths.local_boost.join("Counter.txt");
+    let metadata_paths = [
+        counter_path.clone(),
+        manifest_path(&paths.plugin_info.join("Batch"), plugin_name),
+        manifest_path(&paths.plugin_info.join("File"), plugin_name),
+        manifest_path(&paths.plugin_info.join("Dir"), plugin_name),
+        paths.plugin_info.join("List_LocalBoost.txt"),
+    ];
+    let snapshots = metadata_paths
+        .into_iter()
+        .map(FileSnapshot::capture)
+        .collect::<io::Result<Vec<_>>>()?;
     let mut junctions = JunctionTransaction::default();
-    let scripts = with_copy_transaction(&paths.local_boost, |files| {
+    let result = with_copy_transaction(&paths.local_boost, |files| {
+        let counter = next_counter(&counter_path)?;
         for file in &inventory.files {
             files.copy(&unit.join(file), &paths.edgeless.join(file))?;
         }
@@ -398,58 +377,78 @@ fn publish(
         }
 
         let scripts = expose_scripts(&inventory, counter, &paths.edgeless, files)?;
-        let metadata_paths = [
-            manifest_path(&paths.plugin_info.join("Batch"), plugin_name),
-            manifest_path(&paths.plugin_info.join("File"), plugin_name),
-            manifest_path(&paths.plugin_info.join("Dir"), plugin_name),
-            paths.plugin_info.join("List_LocalBoost.txt"),
-        ];
-        let snapshots = metadata_paths
-            .into_iter()
-            .map(FileSnapshot::capture)
-            .collect::<io::Result<Vec<_>>>()?;
-        let metadata_result = (|| {
-            write_manifest(
-                &paths.plugin_info.join("Batch"),
-                plugin_name,
-                &scripts
-                    .iter()
-                    .filter_map(|script| script.file_name().map(OsStr::to_owned))
-                    .collect::<Vec<_>>(),
-            )?;
-            write_manifest(
-                &paths.plugin_info.join("File"),
-                plugin_name,
-                &inventory.files,
-            )?;
-            write_manifest(
-                &paths.plugin_info.join("Dir"),
-                plugin_name,
-                &inventory.directories,
-            )?;
-            update_plugin_list(&paths.plugin_info.join("List_LocalBoost.txt"), plugin_name)
-        })();
-        if let Err(error) = metadata_result {
+        write_manifest(
+            &paths.plugin_info.join("Batch"),
+            plugin_name,
+            &scripts
+                .iter()
+                .filter_map(|script| script.file_name().map(OsStr::to_owned))
+                .collect::<Vec<_>>(),
+        )?;
+        write_manifest(
+            &paths.plugin_info.join("File"),
+            plugin_name,
+            &inventory.files,
+        )?;
+        write_manifest(
+            &paths.plugin_info.join("Dir"),
+            plugin_name,
+            &inventory.directories,
+        )?;
+        update_plugin_list(&paths.plugin_info.join("List_LocalBoost.txt"), plugin_name)?;
+        run_and_archive_scripts(
+            &scripts,
+            &paths.edgeless,
+            &paths.installers,
+            cmd,
+            pecmd,
+            files,
+        )?;
+        commit_loaded(paths, plugin_name)
+    });
+    match result {
+        Ok(()) => {
+            junctions.commit();
+            Ok(())
+        }
+        Err(error) => {
             let restore_errors = snapshots
                 .iter()
                 .filter_map(|snapshot| snapshot.restore().err())
                 .map(|error| error.to_string())
                 .collect::<Vec<_>>();
             if restore_errors.is_empty() {
-                return Err(error);
+                Err(error)
+            } else {
+                Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{error}; failed to restore metadata: {}",
+                        restore_errors.join("; ")
+                    ),
+                ))
             }
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "{error}; failed to restore metadata: {}",
-                    restore_errors.join("; ")
-                ),
-            ));
         }
-        Ok(scripts)
-    })?;
-    junctions.commit();
-    Ok(scripts)
+    }
+}
+
+#[cfg(windows)]
+fn contains_nested_batch_script(unit: &Path) -> io::Result<bool> {
+    for entry in fs::read_dir(unit)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        for nested in fs::read_dir(entry.path())? {
+            let nested = nested?;
+            if nested.file_type()?.is_file()
+                && (extension_is(&nested.path(), "bat") || extension_is(&nested.path(), "cmd"))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(windows)]
@@ -686,6 +685,7 @@ fn run_and_archive_scripts(
     installers: &Path,
     cmd: &Path,
     pecmd: &Path,
+    transaction: &mut CopyTransaction,
 ) -> io::Result<()> {
     let mut failures = Vec::new();
     for script in scripts.iter().filter(|script| extension_is(script, "cmd")) {
@@ -719,7 +719,11 @@ fn run_and_archive_scripts(
             ));
             continue;
         };
-        if let Err(error) = merge_move(script, &installers.join(name)) {
+        let destination = installers.join(name);
+        if let Err(error) = transaction
+            .copy(script, &destination)
+            .and_then(|()| fs::remove_file(script))
+        {
             failures.push(format!(
                 "failed to archive LocalBoost script {}: {error}",
                 script.display()
@@ -735,19 +739,21 @@ fn run_and_archive_scripts(
 
 #[cfg(windows)]
 fn update_plugin_list(path: &Path, plugin_name: &OsStr) -> io::Result<()> {
+    use super::runtime::{CompatibleText, read_compatible_text};
+
     let name = plugin_name.to_string_lossy();
-    let mut entries = match fs::read_to_string(path) {
-        Ok(contents) => {
+    let existing = read_compatible_text(path)?;
+    let mut entries = match existing.as_ref() {
+        Some(text) => {
             let mut entries = Vec::<String>::new();
-            for line in contents.lines().filter(|line| !line.is_empty()) {
+            for line in text.contents.lines().filter(|line| !line.is_empty()) {
                 if !entries.iter().any(|entry| entry.eq_ignore_ascii_case(line)) {
                     entries.push(line.to_owned());
                 }
             }
             entries
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
+        None => Vec::new(),
     };
     if !entries
         .iter()
@@ -755,7 +761,13 @@ fn update_plugin_list(path: &Path, plugin_name: &OsStr) -> io::Result<()> {
     {
         entries.push(name.into_owned());
     }
-    replace_file(path, (entries.join("\n") + "\n").as_bytes())
+    let newline = existing.as_ref().map_or("\n", CompatibleText::newline);
+    let contents = entries.join(newline) + newline;
+    let bytes = match existing {
+        Some(text) => text.encode(&contents)?,
+        None => CompatibleText::decode(b"")?.encode(&contents)?,
+    };
+    replace_file(path, &bytes)
 }
 
 #[cfg(windows)]
@@ -768,6 +780,8 @@ fn extension_is(path: &Path, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::env;
 
     #[cfg(windows)]
     fn test_root() -> PathBuf {
@@ -788,33 +802,26 @@ mod tests {
     #[test]
     fn parses_the_persistent_repository_drive_selection() {
         assert_eq!(
-            repository_from_selection(" d:\r\n"),
+            repository::repository_from_selection(" d:\r\n"),
             Some(PathBuf::from(r"D:\Edgeless\BoostRepo"))
         );
         assert_eq!(
-            repository_from_selection("\"e\""),
+            repository::repository_from_selection("\"e\""),
             Some(PathBuf::from(r"E:\Edgeless\BoostRepo"))
         );
     }
 
     #[test]
     fn rejects_non_drive_repository_selections() {
-        assert_eq!(repository_from_selection(""), None);
-        assert_eq!(repository_from_selection("D:\\other"), None);
-        assert_eq!(repository_from_selection("../D"), None);
+        assert_eq!(repository::repository_from_selection(""), None);
+        assert_eq!(repository::repository_from_selection("D:\\other"), None);
+        assert_eq!(repository::repository_from_selection("../D"), None);
     }
 
-    #[cfg(windows)]
     #[test]
-    fn rejects_the_windows_pe_system_drive_as_repository() {
-        let root = test_root();
-        let selection = root.join("repoPart.txt");
-        fs::write(&selection, "X").unwrap();
-
-        let error = selected_repository(&selection, Path::new(r"X:")).unwrap_err();
-
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        fs::remove_dir_all(root).unwrap();
+    fn accepts_arbitrary_extensions_and_extensionless_names() {
+        assert_eq!(plugin_name(Path::new("tool.custom")).unwrap(), "tool");
+        assert_eq!(plugin_name(Path::new("tool")).unwrap(), "tool");
     }
 
     #[cfg(windows)]
@@ -882,25 +889,26 @@ mod tests {
             plugin_info: root.join("Users/Plugins_info"),
             local_boost: root.join("Users/LocalBoost"),
             selection_file: root.join("unused-repoPart.txt"),
+            loaded: root.join("Users/LocalBoost/Loaded"),
         };
 
-        let scripts = publish(
+        publish_and_run(
             OsStr::new("tool_1.2_author"),
             &unit,
             &paths,
             Path::new("unused-cmd.exe"),
+            Path::new("unused-pecmd.exe"),
         )
         .unwrap();
-        let repeated_scripts = publish(
+        publish_and_run(
             OsStr::new("tool_1.2_author"),
             &unit,
             &paths,
             Path::new("unused-cmd.exe"),
+            Path::new("unused-pecmd.exe"),
         )
         .unwrap();
 
-        assert!(scripts.is_empty());
-        assert!(repeated_scripts.is_empty());
         assert_eq!(
             fs::read_to_string(paths.edgeless.join("payload.dll")).unwrap(),
             "payload"
@@ -914,6 +922,105 @@ mod tests {
             fs::read_to_string(paths.plugin_info.join("List_LocalBoost.txt")).unwrap(),
             "tool_1.2_author\n"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detects_cmd_and_bat_files_in_first_level_directories() {
+        let root = test_root();
+        let unit = root.join("unit");
+        fs::create_dir_all(unit.join("dependency/nested")).unwrap();
+
+        assert!(!contains_nested_batch_script(&unit).unwrap());
+        fs::write(unit.join("dependency/setup.cmd"), "").unwrap();
+        assert!(contains_nested_batch_script(&unit).unwrap());
+        fs::remove_file(unit.join("dependency/setup.cmd")).unwrap();
+        fs::write(unit.join("dependency/setup.BAT"), "").unwrap();
+        assert!(contains_nested_batch_script(&unit).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn script_failure_rolls_back_runtime_metadata_and_counter() {
+        let root = test_root();
+        let unit = root.join("repository/tool");
+        fs::create_dir_all(&unit).unwrap();
+        fs::write(unit.join("payload.dll"), "new").unwrap();
+        fs::write(unit.join("fail.cmd"), "@exit /b 7\r\n").unwrap();
+        let paths = RuntimePaths {
+            edgeless: root.join("Program Files/Edgeless"),
+            installers: root.join("Program Files/Edgeless/安装程序"),
+            system_drive: root.clone(),
+            plugin_info: root.join("Users/Plugins_info"),
+            local_boost: root.join("Users/LocalBoost"),
+            selection_file: root.join("unused-repoPart.txt"),
+            loaded: root.join("Users/LocalBoost/Loaded"),
+        };
+        fs::create_dir_all(&paths.edgeless).unwrap();
+        fs::create_dir_all(&paths.local_boost).unwrap();
+        fs::create_dir_all(&paths.plugin_info).unwrap();
+        fs::write(paths.edgeless.join("payload.dll"), "old").unwrap();
+        fs::write(paths.local_boost.join("Counter.txt"), "7").unwrap();
+        fs::write(paths.plugin_info.join("List_LocalBoost.txt"), "old\r\n").unwrap();
+
+        let error = restore_unit(
+            OsStr::new("tool"),
+            &unit,
+            &paths,
+            Path::new("cmd.exe"),
+            Path::new("unused-pecmd.exe"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("process exited"));
+        assert_eq!(
+            fs::read_to_string(paths.edgeless.join("payload.dll")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.local_boost.join("Counter.txt")).unwrap(),
+            "7"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.plugin_info.join("List_LocalBoost.txt")).unwrap(),
+            "old\r\n"
+        );
+        assert!(!paths.plugin_info.join("Batch/tool.txt").exists());
+        assert!(!paths.installers.join("fail_localboost_8.cmd").exists());
+        assert!(!is_loaded(&paths, OsStr::new("tool")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn already_loaded_unit_does_not_publish_or_run_scripts_again() {
+        let root = test_root();
+        let unit = root.join("repository/tool");
+        fs::create_dir_all(&unit).unwrap();
+        let paths = RuntimePaths {
+            edgeless: root.join("Program Files/Edgeless"),
+            installers: root.join("Program Files/Edgeless/安装程序"),
+            system_drive: root.clone(),
+            plugin_info: root.join("Users/Plugins_info"),
+            local_boost: root.join("Users/LocalBoost"),
+            selection_file: root.join("unused-repoPart.txt"),
+            loaded: root.join("Users/LocalBoost/Loaded"),
+        };
+        commit_loaded(&paths, OsStr::new("tool")).unwrap();
+
+        let status = restore_unit(
+            OsStr::new("tool"),
+            &unit,
+            &paths,
+            Path::new("missing-cmd.exe"),
+            Path::new("missing-pecmd.exe"),
+        )
+        .unwrap();
+
+        assert_eq!(status, LoadStatus::AlreadyLoaded);
+        assert!(!paths.edgeless.exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

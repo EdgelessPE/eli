@@ -294,6 +294,18 @@ try {
         throw "LocalBoost loading did not report its environment dependency: '$localBoostEnvironmentError'."
     }
 
+    foreach ($localBoostArguments in @(,@('startup'), @('clean', '--all'))) {
+        & $eli plugin localboost @localBoostArguments 1> $stdoutPath 2> $stderrPath
+        if ($LASTEXITCODE -eq 0) {
+            throw "LocalBoost $($localBoostArguments -join ' ') unexpectedly accepted WindowsNormal."
+        }
+        $localBoostEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+        if (-not ($localBoostEnvironmentError.Contains('WindowsPE') -and
+                $localBoostEnvironmentError.Contains('WindowsNormal'))) {
+            throw "LocalBoost command did not report its environment dependency: '$localBoostEnvironmentError'."
+        }
+    }
+
     & $eli nespak load (Join-Path $resolvedTestRoot 'NesPak.7z') 1> $stdoutPath 2> $stderrPath
     if ($LASTEXITCODE -eq 0) {
         throw 'NesPak loading unexpectedly accepted WindowsNormal.'

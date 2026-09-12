@@ -429,6 +429,57 @@ mod tests {
     }
 
     #[test]
+    fn parses_localboost_startup() {
+        let cli = Cli::try_parse_from(["eli", "plugin", "localboost", "startup"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Plugin {
+                command: PluginCommand::Localboost {
+                    command: command::plugin::LocalBoostCommand::Startup,
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn localboost_clean_requires_exactly_one_target() {
+        assert!(Cli::try_parse_from(["eli", "plugin", "localboost", "clean"]).is_err());
+        assert!(
+            Cli::try_parse_from(["eli", "plugin", "localboost", "clean", "plugin", "--all",])
+                .is_err()
+        );
+
+        let plugin =
+            Cli::try_parse_from(["eli", "plugin", "localboost", "clean", "工具箱_1.0_作者"])
+                .unwrap();
+        assert!(matches!(
+            plugin.command,
+            Command::Plugin {
+                command: PluginCommand::Localboost {
+                    command: command::plugin::LocalBoostCommand::Clean {
+                        plugin: Some(name),
+                        all: false,
+                    },
+                }
+            } if name == "工具箱_1.0_作者"
+        ));
+
+        let all = Cli::try_parse_from(["eli", "plugin", "localboost", "clean", "--all"]).unwrap();
+        assert!(matches!(
+            all.command,
+            Command::Plugin {
+                command: PluginCommand::Localboost {
+                    command: command::plugin::LocalBoostCommand::Clean {
+                        plugin: None,
+                        all: true,
+                    },
+                }
+            }
+        ));
+    }
+
+    #[test]
     fn parses_config_set_with_a_resolution_value() {
         let cli =
             Cli::try_parse_from(["eli", "config", "set", "resolution", "w1920 h1080 b32 f60"])

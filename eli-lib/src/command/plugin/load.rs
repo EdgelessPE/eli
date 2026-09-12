@@ -65,6 +65,8 @@ impl Default for LoadOptions {
 pub enum LoadStatus {
     Loaded,
     LoadedWithLocalBoost,
+    LoadedWithLocalBoostCompatibilityWarning,
+    AlreadyLoadedWithLocalBoost,
     SkippedLocalBoost,
 }
 
@@ -86,7 +88,10 @@ impl LoadSummary {
             .filter(|result| {
                 matches!(
                     result.result,
-                    Ok(LoadStatus::Loaded | LoadStatus::LoadedWithLocalBoost)
+                    Ok(LoadStatus::Loaded
+                        | LoadStatus::LoadedWithLocalBoost
+                        | LoadStatus::LoadedWithLocalBoostCompatibilityWarning
+                        | LoadStatus::AlreadyLoadedWithLocalBoost)
                 )
             })
             .count()
@@ -158,7 +163,13 @@ trait PackageLoader: Send + Sync {
     fn extract(&self, source: &Path, destination: &Path) -> io::Result<()>;
     fn run_cmd(&self, script: &Path, working_directory: &Path) -> io::Result<()>;
     fn run_wcs(&self, script: &Path, working_directory: &Path) -> io::Result<()>;
-    fn load_with_local_boost(&self, source: &Path) -> io::Result<()>;
+    fn load_with_local_boost(
+        &self,
+        source: &Path,
+    ) -> io::Result<super::localboost::load::LoadStatus>;
+    fn prepare_local_boost(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -206,8 +217,15 @@ impl PackageLoader for SystemPackageLoader {
         )
     }
 
-    fn load_with_local_boost(&self, source: &Path) -> io::Result<()> {
+    fn load_with_local_boost(
+        &self,
+        source: &Path,
+    ) -> io::Result<super::localboost::load::LoadStatus> {
         super::localboost::load::load_resolved(source, &self.seven_zip, &self.cmd, &self.pecmd)
+    }
+
+    fn prepare_local_boost(&self) -> io::Result<()> {
+        super::localboost::load::prepare_repository()
     }
 }
 
@@ -285,6 +303,14 @@ fn load_with(
                 .map(|input| input.path.clone())
                 .collect(),
         );
+    }
+    if options.local_boost == LocalBoostHandling::Load
+        && expanded
+            .files
+            .iter()
+            .any(|input| is_local_boost(&input.path))
+    {
+        loader.prepare_local_boost()?;
     }
     let mut results = expanded.errors;
     let mut tasks = VecDeque::new();
@@ -370,7 +396,17 @@ fn load_with(
                     let result = if is_local_boost(&task.path) {
                         loader
                             .load_with_local_boost(&task.path)
-                            .map(|_| LoadStatus::LoadedWithLocalBoost)
+                            .map(|status| match status {
+                                super::localboost::load::LoadStatus::Loaded => {
+                                    LoadStatus::LoadedWithLocalBoost
+                                }
+                                super::localboost::load::LoadStatus::LoadedWithCompatibilityWarning => {
+                                    LoadStatus::LoadedWithLocalBoostCompatibilityWarning
+                                }
+                                super::localboost::load::LoadStatus::AlreadyLoaded => {
+                                    LoadStatus::AlreadyLoadedWithLocalBoost
+                                }
+                            })
                     } else {
                         load_one(
                             &task.path,
@@ -1375,8 +1411,11 @@ mod tests {
             Ok(())
         }
 
-        fn load_with_local_boost(&self, _source: &Path) -> io::Result<()> {
-            Ok(())
+        fn load_with_local_boost(
+            &self,
+            _source: &Path,
+        ) -> io::Result<crate::command::plugin::localboost::load::LoadStatus> {
+            Ok(crate::command::plugin::localboost::load::LoadStatus::Loaded)
         }
     }
 
@@ -1403,7 +1442,10 @@ mod tests {
             Ok(())
         }
 
-        fn load_with_local_boost(&self, _source: &Path) -> io::Result<()> {
+        fn load_with_local_boost(
+            &self,
+            _source: &Path,
+        ) -> io::Result<crate::command::plugin::localboost::load::LoadStatus> {
             unreachable!()
         }
     }
@@ -1443,7 +1485,10 @@ mod tests {
             Ok(())
         }
 
-        fn load_with_local_boost(&self, _source: &Path) -> io::Result<()> {
+        fn load_with_local_boost(
+            &self,
+            _source: &Path,
+        ) -> io::Result<crate::command::plugin::localboost::load::LoadStatus> {
             unreachable!()
         }
     }

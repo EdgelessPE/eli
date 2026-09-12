@@ -179,6 +179,20 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'Linux' "$stderr_path"
 
+if "$eli" plugin localboost startup > "$stdout_path" 2> "$stderr_path"; then
+    echo 'LocalBoost startup unexpectedly accepted Linux.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'Linux' "$stderr_path"
+
+if "$eli" plugin localboost clean --all > "$stdout_path" 2> "$stderr_path"; then
+    echo 'LocalBoost cleanup unexpectedly accepted Linux.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'Linux' "$stderr_path"
+
 if "$eli" nespak load "$test_root/NesPak.7z" > "$stdout_path" 2> "$stderr_path"; then
     echo 'NesPak loading unexpectedly accepted Linux.' >&2
     exit 1

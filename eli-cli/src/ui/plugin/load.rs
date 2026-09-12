@@ -9,6 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+const LOCALBOOST_COMPATIBILITY_WARNING: &str =
+    "依赖目录中包含 BAT/CMD 文件，LocalBoost 运行时可能无法正确使用该插件";
+
 slint::include_modules!();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +67,11 @@ impl GuiState {
         let (path, state, detail) = match progress {
             LoadProgress::Started { path } => (path, RowState::Loading, String::new()),
             LoadProgress::Finished { path, result } => match result {
+                Ok(LoadStatus::LoadedWithLocalBoostCompatibilityWarning) => (
+                    path,
+                    RowState::Succeeded,
+                    LOCALBOOST_COMPATIBILITY_WARNING.to_owned(),
+                ),
                 Ok(_) => (path, RowState::Succeeded, String::new()),
                 Err(error) => (path, RowState::Failed, error),
             },
@@ -80,8 +88,16 @@ impl GuiState {
             .into_iter()
             .map(|result| {
                 let (state, detail) = match result.result {
-                    Ok(LoadStatus::Loaded | LoadStatus::LoadedWithLocalBoost)
-                    | Ok(LoadStatus::SkippedLocalBoost) => (RowState::Succeeded, String::new()),
+                    Ok(LoadStatus::LoadedWithLocalBoostCompatibilityWarning) => (
+                        RowState::Succeeded,
+                        LOCALBOOST_COMPATIBILITY_WARNING.to_owned(),
+                    ),
+                    Ok(
+                        LoadStatus::Loaded
+                        | LoadStatus::LoadedWithLocalBoost
+                        | LoadStatus::AlreadyLoadedWithLocalBoost
+                        | LoadStatus::SkippedLocalBoost,
+                    ) => (RowState::Succeeded, String::new()),
                     Err(error) => (RowState::Failed, error.to_string()),
                 };
                 Row {
@@ -398,5 +414,20 @@ mod tests {
 
         assert_eq!(state.failed_paths, vec![PathBuf::from("second.7z")]);
         assert_eq!(state.rows.len(), 2);
+    }
+
+    #[test]
+    fn localboost_compatibility_warning_is_kept_as_success_detail() {
+        let mut state = GuiState::new(vec![PathBuf::from("warning.7zl")]);
+
+        assert!(state.finish(LoadSummary {
+            results: vec![LoadResult {
+                path: PathBuf::from("warning.7zl"),
+                result: Ok(LoadStatus::LoadedWithLocalBoostCompatibilityWarning),
+            }],
+        }));
+
+        assert_eq!(state.rows[0].state, RowState::Succeeded);
+        assert_eq!(state.rows[0].detail, LOCALBOOST_COMPATIBILITY_WARNING);
     }
 }
