@@ -1,6 +1,8 @@
 use crate::Ctx;
 use crate::dependency::RuntimeEnvironment;
-use std::ffi::{OsStr, OsString};
+#[cfg(any(windows, test))]
+use std::ffi::OsStr;
+use std::ffi::OsString;
 #[cfg(windows)]
 use std::fs;
 use std::io;
