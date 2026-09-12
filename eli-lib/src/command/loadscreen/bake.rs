@@ -595,64 +595,55 @@ struct OutputTransaction {
     output: PathBuf,
     reported_output: PathBuf,
     staging: PathBuf,
-    _lock: OutputLock,
+    lock: OutputLock,
 }
 
 struct OutputLock {
     file: Option<File>,
     path: PathBuf,
+    remove_on_drop: bool,
 }
 
 impl OutputLock {
     fn acquire(path: PathBuf, output: &Path) -> io::Result<Self> {
-        loop {
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    FileExt::lock_exclusive(&file)?;
-                    return Ok(Self {
-                        file: Some(file),
-                        path,
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-
-            let file = match OpenOptions::new().read(true).write(true).open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
-            };
-            match FileExt::try_lock_exclusive(&file) {
-                Err(error) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        format!(
-                            "output file is already being baked {}: {error}",
-                            output.display()
-                        ),
-                    ));
-                }
-                Ok(()) => {
-                    // 已解锁的同名文件来自异常退出或刚结束的任务，先删除再重新原子创建。
-                    let _ = fs::remove_file(&path);
-                    let _ = FileExt::unlock(&file);
-                }
-            }
+        // 所有竞争者必须打开同一个稳定的目录项再争用文件锁。若先通过
+        // create_new 声明所有权、再加锁，其他进程可能在两步之间把尚未
+        // 加锁的文件误判为陈旧锁并重建目录项，最终让两个任务同时运行。
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        if let Err(error) = FileExt::try_lock_exclusive(&file) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "output file is already being baked {}: {error}",
+                    output.display()
+                ),
+            ));
         }
+        Ok(Self {
+            file: Some(file),
+            path,
+            remove_on_drop: false,
+        })
+    }
+
+    fn remove_when_dropped(&mut self) {
+        self.remove_on_drop = true;
     }
 }
 
 impl Drop for OutputLock {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            // 保持锁直到目录项删除，避免新任务取得即将被删除的旧锁文件。
-            let _ = fs::remove_file(&self.path);
+            // 输出存在后才可安全删除目录项；失败时保留已解锁的稳定锁文件，
+            // 避免旧句柄与新建目录项分别被锁定而形成两个并发所有者。
+            if self.remove_on_drop {
+                let _ = fs::remove_file(&self.path);
+            }
             let _ = FileExt::unlock(&file);
             drop(file);
         }
@@ -688,15 +679,20 @@ impl OutputTransaction {
         lock_name.push(file_name);
         lock_name.push(".eli-loadscreen-bake.lock");
         let lock_path = parent.join(lock_name);
-        let lock = OutputLock::acquire(lock_path, &reported_output)?;
-        validate_output_available(&output, &reported_output)?;
+        let mut lock = OutputLock::acquire(lock_path, &reported_output)?;
+        if let Err(error) = validate_output_available(&output, &reported_output) {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                lock.remove_when_dropped();
+            }
+            return Err(error);
+        }
 
         let staging = create_staging_directory(&parent, file_name)?;
         Ok(Self {
             output,
             reported_output,
             staging,
-            _lock: lock,
+            lock,
         })
     }
 
@@ -711,8 +707,15 @@ impl OutputTransaction {
     fn publish(&mut self, frames: &[FrameSpec]) -> io::Result<()> {
         let archive = self.staging.join(".eli-loadscreen-bake.tar");
         create_tar_archive(&self.staging, &archive, frames)?;
-        validate_output_available(&self.output, &self.reported_output)?;
-        fs::rename(archive, &self.output)
+        if let Err(error) = validate_output_available(&self.output, &self.reported_output) {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                self.lock.remove_when_dropped();
+            }
+            return Err(error);
+        }
+        fs::rename(archive, &self.output)?;
+        self.lock.remove_when_dropped();
+        Ok(())
     }
 }
 
