@@ -256,11 +256,11 @@ fn localboost_clean(ctx: &Ctx, target: CleanTarget) -> io::Result<()> {
     }
 }
 
+#[cfg(windows)]
 fn with_repository_selection<T>(
     ctx: &Ctx,
     mut operation: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
-    let _ = ctx;
     loop {
         match operation() {
             Ok(value) => return Ok(value),
@@ -270,27 +270,27 @@ fn with_repository_selection<T>(
                 else {
                     return Err(error);
                 };
-                #[cfg(windows)]
-                {
-                    let selected = crate::ui::plugin::localboost_repository::select(
-                        required.candidates().to_vec(),
-                    )?
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "LocalBoost repository selection was cancelled",
-                        )
-                    })?;
-                    eli_lib::command::plugin::localboost::repository::confirm(ctx, &selected)?;
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = required;
-                    return Err(error);
-                }
+                let selected = crate::ui::plugin::localboost_repository::select(
+                    required.candidates().to_vec(),
+                )?
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "LocalBoost repository selection was cancelled",
+                    )
+                })?;
+                eli_lib::command::plugin::localboost::repository::confirm(ctx, &selected)?;
             }
         }
     }
+}
+
+#[cfg(not(windows))]
+fn with_repository_selection<T>(
+    _ctx: &Ctx,
+    mut operation: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    operation()
 }
 
 fn load(
