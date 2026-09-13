@@ -95,9 +95,7 @@ export component LocalBoostRepositoryWindow inherits EliWindow {
                         x: 40px;
                         y: 8px;
                         width: parent.width - 52px;
-                        text: row.label == ""
-                            ? row.mount-point
-                            : row.mount-point + "  " + row.label;
+                        text: (row.label == "" ? "本地磁盘" : row.label) + " (" + row.mount-point + ")";
                         color: Tokens.color-window-foreground;
                         font-size: Tokens.typography-body-size;
                         font-weight: Tokens.typography-weight-medium;
