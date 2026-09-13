@@ -43,7 +43,11 @@ eli-cli/src/ui/
 
 `EliWindow` 统一负责窗口表面、边框、圆角、标题栏、关闭按钮和 `close.svg`；业务页面不得重复绘制这些元素。页面只处理自己的内容，并将 `close-requested` 映射到取消或关闭行为。
 
-Slint 无法完成的 Windows 原生样式、圆角区域和 `WM_NCHITTEST` 统一放在 `eli-cli/src/ui/window.rs`。通过 `WindowAdapter` 将 `EliWindow` 的标题栏高度、左右排除区和圆角参数传给 Rust，禁止在业务控制器中再次硬编码同一组尺寸。只有标题栏中未被控件占用的空白区域可以拖动。
+Windows 上的 Eli 小窗口必须使用无系统装饰的 popup 样式，不得显示 Windows 原生标题栏、系统边框或原生关闭按钮；用户只能看到 `EliWindow` 自绘的标题栏和关闭按钮。
+
+窗口圆角必须同时作用于 `EliWindow` 的自绘表面和真实原生窗口区域，不能只给内部 `Rectangle` 设置 `border-radius`，否则窗口四角仍会保留矩形背景或可点击区域。Slint 无法完成的 Windows popup 样式、原生圆角区域和 `WM_NCHITTEST` 统一放在 `eli-cli/src/ui/window.rs`。通过 `WindowAdapter` 将 `EliWindow` 的标题栏高度、左右排除区和圆角参数传给 Rust，禁止在业务控制器中再次硬编码同一组尺寸。只有标题栏中未被控件占用的空白区域可以拖动。
+
+任何用于截图或实机验收的临时预览入口都必须安装与正式业务入口相同的 `WindowAdapter` 回调，确认 popup 样式和原生圆角区域已经成功应用后才可将截图作为验收依据；带有 Windows 原生标题栏、双层标题栏或矩形原生窗口边角的预览一律视为失败。
 
 ## 通用组件
 
@@ -64,7 +68,9 @@ Slint 无法完成的 Windows 原生样式、圆角区域和 `WM_NCHITTEST` 统�
 - 后台线程只能通过 `slint::invoke_from_event_loop` 更新 UI。
 - 并行任务的可见状态必须对应真实的开始、完成和失败事件；单个任务失败不得篡改其他任务状态。
 - 普通布局使用 `VerticalLayout`、`HorizontalLayout`、`GridLayout` 和 stretch；`x/y` 仅用于标题栏、自绘图形和浮层等确需绝对定位的区域。
+- 对话框业务内容的主左边界必须与 `EliWindow` 标题文本的左边界对齐；当前标题使用 `Tokens.spacing-lg`，业务页面采用其他内边距前必须对照实际渲染确认，不得只凭容器默认间距判断。
 - 长列表使用 `ListView` 或有明确可视高度的滚动容器，并为滚动条和行尾状态留出空间。
+- `ListView`/`ScrollView` 的行背景、边框和点击热区必须在右侧预留独立滚动条槽，不能延伸到滚动条下方；滚动条 hover 展开后也不得覆盖选项内容。可沿用 `ui/plugin/load.slint` 中内容宽度减去 `28px` 的布局模式；`ListView` 可能接管直接委托项的宽度，此时应让外层虚拟化行保持全宽，再在其中放置减去滚动条槽宽度的可视行，不能只设置直接委托项的 `width`。必须在目标窗口实际验证普通与 hover 状态。
 - Tooltip、错误详情等浮层放在窗口根层最后绘制，不能依赖列表行的绘制顺序；锚点必须随滚动偏移同步。
 
 ## 验证

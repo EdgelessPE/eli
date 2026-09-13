@@ -30,9 +30,9 @@ export component LocalBoostRepositoryWindow inherits EliWindow {
     close-requested => { root.cancel-requested(); }
 
     VerticalLayout {
-        x: Tokens.spacing-xl;
+        x: Tokens.spacing-lg;
         y: root.titlebar-height + Tokens.spacing-md;
-        width: parent.width - 2 * Tokens.spacing-xl;
+        width: parent.width - 2 * Tokens.spacing-lg;
         height: parent.height - root.titlebar-height - Tokens.spacing-xl;
         spacing: Tokens.spacing-md;
 
@@ -41,6 +41,7 @@ export component LocalBoostRepositoryWindow inherits EliWindow {
             color: Tokens.color-muted-foreground;
             font-size: Tokens.typography-body-sm-size;
             wrap: word-wrap;
+            horizontal-stretch: 1;
             vertical-stretch: 0;
         }
 
@@ -48,73 +49,80 @@ export component LocalBoostRepositoryWindow inherits EliWindow {
             horizontal-stretch: 1;
             vertical-stretch: 1;
 
-            for row[index] in root.rows: row-item := Rectangle {
+            for row[index] in root.rows: Rectangle {
                 height: 58px;
-                background: index == root.selected-index
-                    ? Tokens.color-surface-2
-                    : hover.has-hover && row.selectable
-                        ? Tokens.color-surface-1
-                        : transparent;
-                border-width: index == root.selected-index ? 1px : 0px;
-                border-color: Tokens.color-ring;
-                border-radius: Tokens.radius-md;
-                opacity: row.selectable ? 1.0 : 0.55;
 
-                selection-mark := Rectangle {
-                    x: Tokens.spacing-md;
-                    y: 20px;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: row.selectable
-                        ? Tokens.color-window-foreground
-                        : Tokens.color-muted-foreground;
+                row-item := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width - 28px;
+                    height: parent.height;
                     background: index == root.selected-index
-                        ? Tokens.color-window-foreground
-                        : transparent;
+                        ? Tokens.color-surface-2
+                        : hover.has-hover && row.selectable
+                            ? Tokens.color-surface-1
+                            : transparent;
+                    border-width: index == root.selected-index ? 1px : 0px;
+                    border-color: Tokens.color-ring;
+                    border-radius: Tokens.radius-md;
+                    opacity: row.selectable ? 1.0 : 0.55;
 
-                    if index == root.selected-index: Rectangle {
-                        x: 5px;
-                        y: 5px;
-                        width: 4px;
-                        height: 4px;
-                        border-radius: 2px;
-                        background: Tokens.color-window-background;
+                    selection-mark := Rectangle {
+                        x: Tokens.spacing-md;
+                        y: 20px;
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: row.selectable
+                            ? Tokens.color-window-foreground
+                            : Tokens.color-muted-foreground;
+                        background: index == root.selected-index
+                            ? Tokens.color-window-foreground
+                            : transparent;
+
+                        if index == root.selected-index: Rectangle {
+                            x: 6px;
+                            y: 6px;
+                            width: 4px;
+                            height: 4px;
+                            border-radius: 2px;
+                            background: Tokens.color-window-background;
+                        }
                     }
-                }
 
-                Text {
-                    x: 40px;
-                    y: 8px;
-                    width: parent.width - 52px;
-                    text: row.label == ""
-                        ? row.mount-point
-                        : row.mount-point + "  " + row.label;
-                    color: Tokens.color-window-foreground;
-                    font-size: Tokens.typography-body-size;
-                    font-weight: Tokens.typography-weight-medium;
-                    overflow: elide;
-                }
+                    Text {
+                        x: 40px;
+                        y: 8px;
+                        width: parent.width - 52px;
+                        text: row.label == ""
+                            ? row.mount-point
+                            : row.mount-point + "  " + row.label;
+                        color: Tokens.color-window-foreground;
+                        font-size: Tokens.typography-body-size;
+                        font-weight: Tokens.typography-weight-medium;
+                        overflow: elide;
+                    }
 
-                Text {
-                    x: 40px;
-                    y: 31px;
-                    width: parent.width - 52px;
-                    text: row.reason != ""
-                        ? row.reason
-                        : row.available + (row.has-repository ? " · 已有仓库" : " · 可创建仓库");
-                    color: row.reason != ""
-                        ? Tokens.color-destructive
-                        : Tokens.color-muted-foreground;
-                    font-size: Tokens.typography-label-size;
-                    overflow: elide;
-                }
+                    Text {
+                        x: 40px;
+                        y: 31px;
+                        width: parent.width - 52px;
+                        text: row.reason != ""
+                            ? row.reason
+                            : row.available + (row.has-repository ? " · 已有仓库" : " · 可创建仓库");
+                        color: row.reason != ""
+                            ? Tokens.color-destructive
+                            : Tokens.color-muted-foreground;
+                        font-size: Tokens.typography-label-size;
+                        overflow: elide;
+                    }
 
-                hover := TouchArea {
-                    enabled: row.selectable && !root.busy;
-                    mouse-cursor: self.enabled ? pointer : default;
-                    clicked => { root.selected-index = index; }
+                    hover := TouchArea {
+                        enabled: row.selectable && !root.busy;
+                        mouse-cursor: self.enabled ? pointer : default;
+                        clicked => { root.selected-index = index; }
+                    }
                 }
             }
         }
