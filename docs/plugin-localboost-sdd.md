@@ -96,6 +96,8 @@ eli plugin localboost clean --all
 
 选择规则对齐原版 GUI：排除 PE 系统盘、Edgeless 启动盘、不可写及剩余空间不足 2 GiB 的卷。窗口展示盘符/挂载点、卷标、可用空间和不可选原因；确认后由 `eli-lib` 再次校验并原子写入 `repoPart.txt`，防止界面展示后磁盘状态变化。
 
+启动集成必须遵守 [LoadScreen 的交互式界面让出约定](loadscreen-play-loader-sdd.md#73-交互式界面让出)。Loader 在启动计划包含 LocalBoost 仓库恢复或 `.7zl` 加载任务时，应优先在显示 Play 前解析仓库并完成必要的用户选择；若二次校验时 Play 已经可见，必须先等待 Play 隐藏并移除置顶状态，再展示选择窗口。不得让选择窗口直接出现在全屏置顶的 LoadScreen 后方，也不得使用 `DisableLoadScreen` 文件协调新 Loader 与 Play。用户取消选择时，跳过本次启动中依赖仓库的 LocalBoost 任务并记录警告，其余启动流程继续。
+
 UI 文件与职责：
 
 ```text
