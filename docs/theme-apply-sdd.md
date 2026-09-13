@@ -66,7 +66,7 @@
 1. 查询 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation\Manufacturer`，要求值为 `Edgeless`。
 2. 在 `systemcpl.dll.mun` 或 `systemcpl.dll` 中搜索 `Edgeless` 字样。这两个文件承载 Windows“系统/系统属性”控制面板的代码或本地化资源，旧镜像会在其中显示 OEM 品牌。
 
-该检查实际用于阻止脚本在非 Edgeless 环境运行，但它把品牌文本、系统文件内容和运行环境混在了一起，且 `autoESS` 自身又绕过了检查。新实现不机械复刻这两项文本检查：统一依赖中台负责确认 `WindowsPE`，各处理器在副作用前验证自己需要的 Edgeless 运行时路径、系统文件和当前 Shell 用户上下文。若未来需要强制限定“官方 Edgeless PE”，应在依赖中台新增独立的 `EdgelessRuntime` 能力检查，而不是在主题命令内重复读取 OEM 字符串。
+该检查用于阻止脚本在非 Edgeless 环境运行。`theme apply` 没有对应旧版 `autoESS` 的内部启动特例，因此首版必须保留这道门禁，但不能让主题命令自行复制注册表和二进制文本搜索逻辑。统一依赖管理模块新增 `EdgelessRuntime` 环境能力：先确认 `WindowsPE`，再按原版兼容规则检查 OEM `Manufacturer=Edgeless`，并确认 `systemcpl.dll.mun` 或回退的 `systemcpl.dll` 中包含 `Edgeless`。任一步失败都必须在副作用前返回明确的“不属于受支持 Edgeless PE”错误。
 
 ### 2.3 ELS 在原版中的真实语义
 
@@ -95,10 +95,24 @@
 
 主题规范网页用于确定资源扩展名、标准组件名和归档形态；Win32 API 的调用约束以 Microsoft 文档为准。共享会话中的推断只作为定位线索，不作为平台行为的唯一依据。
 
+### 2.5 兼容性审查基线
+
+本节只约束符合原版主题规范且能够成功应用的输入：新实现必须保留组件落序、注册表和文件映射、EIS 调用时机以及 Explorer 刷新次数/位置。在这些成功路径中，仅允许以下已经由用户明确确认的差异：
+
+- 由 `theme apply <PACKAGE>` 自动按扩展名路由，不再使用类型参数和 `Path/*.txt` 临时传参。
+- `apply` 只处理当前 PE 会话，启动盘持久化留给未来 `theme store`。
+- ELS 在 `apply` 中告警并跳过，未来 Store 才负责迁移。
+- EMS 用同步注册表写入、关闭句柄、读回和 `SPI_SETCURSORS` 代替控制面板模拟确认。
+- EIS 由 Eli 直接修改 `.lnk`，不调用 `setDesktopIcon.exe`。
+- ESC 继续交给 PECMD 解释。
+- 独立 `plugin load` 后不执行图标替换；只保留 EIS 应用瞬间和启动流程收尾两个原版调用时机。
+
+错误路径采用单独策略：目录重构、跨平台条件编译、并发锁、原子写入、回滚和归档安全校验可以让损坏、缺失或恶意输入更早失败，但不得改变上述合法主题成功应用后的可观察结果。本设计不要求复现旧脚本在命令失败、文件缺失或进程崩溃时留下半成品的偶然行为；这不是对成功路径兼容性的额外豁免。
+
 ## 3. 目标
 
 1. 通过一个明确的路径参数自动识别并应用 `.eth`、`.eis`、`.ems`、`.esc`、`.ess`、`.els` 和 `.jpg`。
-2. 在任何副作用前验证当前环境为 `WindowsPE`，并通过条件编译保证 Windows、Linux、macOS 均可构建。
+2. 在任何副作用前验证当前环境为 `WindowsPE` 且满足原版 `EdgelessRuntime` 门禁，并通过条件编译保证 Windows、Linux、macOS 均可构建。
 3. 统一使用依赖管理模块解析和探测 `7z.exe`、`pecmd.exe`，不硬编码安装路径。
 4. 对组合主题执行完整预检，尽量在修改系统前发现损坏包、危险归档条目或缺失资源。
 5. 直接在 Rust 中实现 EIS 的桌面快捷方式图标替换，不再调用 `setDesktopIcon.exe`。
@@ -147,7 +161,7 @@ eli theme apply "D:\Themes\WallPaper.jpg"
 | `.esc` | 开始菜单配置 | 通过 PECMD 同步加载脚本 |
 | `.ess` | 系统图标包 | 事务替换系统资源 DLL 并刷新 Shell |
 | `.els` | 旧 LoadScreen 包 | 打印迁移警告并返回 `Skipped`，不执行其他操作 |
-| `.jpg` | 壁纸 | 发布会话壁纸并调用 Windows API |
+| `.jpg` | 壁纸 | 发布会话壁纸并调用 PECMD `WALL` |
 
 成功时输出逐组件结果和一行总计；警告写入标准错误流。任何错误都必须包含外层源路径、组件类型和失败阶段。退出码保持简单：全部成功为 `0`，发生任何失败为非零。
 
@@ -170,7 +184,7 @@ PreparedTheme（无系统副作用）
     ↓
 按计划提交各组件
     ↓
-合并并执行一次 Shell 刷新
+按原版时机执行组件刷新和必要的 Explorer 重启
     ↓
 ApplySummary
 ```
@@ -243,30 +257,30 @@ Edgeless 兼容图标根目录为：
 
 1. 校验扩展名和输入是普通文件。
 2. 调用 `DependencyManager::require_environment(RuntimeEnvironment::WindowsPE)`。
-3. 根据外层类型解析最低必要依赖。
-4. 完成依赖探测和全部可执行前置检查。
-5. 才允许创建工作目录或修改系统状态。
+3. 调用依赖管理模块的 `require_capability(RuntimeCapability::EdgelessRuntime)`，执行原版品牌门禁。
+4. 根据外层类型解析最低必要程序依赖。
+5. 完成依赖探测和全部可执行前置检查。
+6. 才允许创建工作目录或修改系统状态。
 
 依赖表：
 
 | 场景 | 依赖 |
 | --- | --- |
+| 所有 `theme apply` 输入 | `WindowsPE` + `EdgelessRuntime` |
 | `.eth/.eis/.ems/.ess` | `ProgramDependency::SevenZip` |
-| `.esc` | `ProgramDependency::Pecmd` |
-| 含 `.esc` 的 `.eth` | `SevenZip` 和 `Pecmd` |
+| `.esc/.jpg` | `ProgramDependency::Pecmd` |
+| 含 `.esc` 或 `WallPaper.jpg` 的 `.eth` | `SevenZip` 和 `Pecmd` |
 | `.els` | 无；只检查扩展名、打印警告并跳过 |
-| `.jpg` | 无外部程序依赖 |
 
-`.eth` 必须先通过 7-Zip 列出根目录，才能确定是否还需要 PECMD。`7z.exe` 和 `pecmd.exe` 都从 `PATH` 解析、执行中台定义的测试参数并返回绝对路径。
+`.eth` 必须先通过 7-Zip 列出根目录，才能根据 ESC 或壁纸组件确定是否还需要 PECMD。`7z.exe` 和 `pecmd.exe` 都从 `PATH` 解析、执行中台定义的测试参数并返回绝对路径。
 
-旧脚本的 OEM 厂商字符串和 `systemcpl.dll` 文本检查不再作为 `theme apply` 的内联门禁，原因如下：
+`EdgelessRuntime` 属于运行环境能力，不属于外部程序依赖。其首版兼容规则固定为：
 
-- 两项检查验证的是“系统镜像中是否带有 Edgeless 品牌文本”，并不能证明当前环境就是可安全修改的 Windows PE 会话；品牌值和 MUI 资源也可能被定制、删改或因系统版本变化而迁移。
-- `systemcpl.dll(.mun)` 是控制面板资源文件，不是 EIS、EMS、ESS、ESC 或壁纸处理器共同依赖的能力；用字符串搜索把业务逻辑错误耦合到特定镜像布局。
-- 原版 `autoESS` 会绕过这两项检查，说明旧脚本自身也没有把它们当成一致的安全边界。
-- 项目已有统一运行环境/程序依赖中台，正确边界是先要求 `RuntimeEnvironment::WindowsPE`，再让各处理器验证真正会访问的 Edgeless 路径、Shell 用户上下文和系统文件。
+1. 读取 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation` 的 `Manufacturer`，值必须为 `Edgeless`。
+2. 优先检查 `%SystemRoot%\SystemResources\systemcpl.dll.mun`；文件不存在或不含目标文本时，回退检查 `%SystemRoot%\System32\systemcpl.dll`。
+3. 至少一个候选文件包含 `Edgeless` 才通过。
 
-因此本次不是取消环境保护，而是用可测试的能力检查替换易碎的品牌文本检查。若产品以后要求只允许“官方 Edgeless PE”而不是任意 Windows PE，应在依赖中台增加独立的 `EdgelessRuntime` 环境能力，并由命令声明该能力；不能重新在主题处理器里散落 OEM/二进制文本搜索。
+该能力集中实现在依赖管理模块中并由主题命令声明，既保留原版支持边界，也避免业务处理器散落重复检查。未来若 Edgeless 镜像品牌方式变化，只修改能力探测规则和对应测试。
 
 ## 8. 归档安全与格式校验
 
@@ -296,7 +310,7 @@ Edgeless 兼容图标根目录为：
 
 ## 9. `.eth` 组合主题编排
 
-`.eth` 中所有组件均为可选，但至少要存在一个可识别组件，否则返回 `InvalidData`。若包内只有 `LoadScreen.els`，命令仍正常完成并汇总为 `0 Applied / 1 Skipped`，同时输出迁移警告。规范组件如下：
+`.eth` 中所有组件均为可选。没有可识别组件的包按原版行为作为空操作成功，汇总为 `0 Applied / 0 Skipped`；未知根条目仍输出警告。若包内只有 `LoadScreen.els`，命令正常完成并汇总为 `0 Applied / 1 Skipped`，同时输出迁移警告。规范组件如下：
 
 - `WallPaper.jpg`
 - `LoadScreen.els`
@@ -307,18 +321,17 @@ Edgeless 兼容图标根目录为：
 
 提交顺序固定为：
 
-1. 在计划结果中记录 ELS 为 `Skipped` 并输出一次警告；该步骤无系统副作用。
-2. 应用壁纸。
-3. 发布 EIS 图标并第一次刷新已有快捷方式。
-4. 应用 EMS 鼠标样式。
-5. 执行 ESC 开始菜单配置。
-6. 应用 ESS 系统图标。
-7. 合并刷新请求，必要时只重启一次 Explorer。
-8. Explorer 可用后再次扫描桌面快捷方式，补齐应用过程中新增的 `.lnk`。
+1. 应用壁纸。
+2. 在计划结果中记录 ELS 为 `Skipped` 并输出一次警告；该步骤无系统副作用。
+3. 执行 ESC 开始菜单配置；在 `.eth` 中只记录“末尾重启 Explorer”请求，此时不重启。
+4. 应用 ESS 系统图标，并按原版时机完成 ESS 自身的缓存刷新和 Explorer 重启。
+5. 应用 EMS 鼠标样式。
+6. 发布 EIS 图标并立即刷新当时已有的快捷方式。
+7. 若第 3 步实际执行过 ESC，则在 EIS 完成后重启一次 Explorer；没有 ESC 时不追加该次重启。
 
-顺序不用于表达组件之间的依赖，而用于减少可见闪烁和 Explorer 重启次数。准备阶段允许并行做纯读取、解码或校验，但首版默认串行准备；提交阶段始终串行。
+该顺序直接对应解密版 `setTheme.cmd` 从 `setWallPaper` 到 `setIconPack` 的落序。若同时存在 ESS 和 ESC，Explorer 可能发生两次重启：一次属于 ESS 自身刷新，一次属于组合主题末尾的 ESC 刷新。首版保留这一可观察时序，不擅自合并。准备阶段允许并行做纯读取、解码或校验，但首版默认串行准备；提交阶段始终串行。
 
-某个组件提交失败后停止后续组件，并返回已提交组件和失败组件的汇总。已经提交的可回滚组件只在当前组件自己的提交失败时回滚；不跨越已经成功执行的 `.esc` 做伪事务。错误信息必须明确说明主题可能已部分应用。
+某个组件提交失败时，先在该组件自身事务范围内尽量回滚，然后继续执行后续组件，保持原版组合主题的 best-effort 落序。命令最终汇总所有 `Applied`、`Skipped` 和 `Failed`，只要存在失败就返回非零；不跨越已经成功执行的 `.esc` 做伪事务。错误信息必须明确说明主题可能已部分应用。
 
 ## 10. `.ems` 鼠标样式
 
@@ -344,15 +357,17 @@ Edgeless 兼容图标根目录为：
 | `aero_up` | `UpArrow` | 14 |
 | `aero_link` | `Hand` | 15 |
 
-若未来包提供 `aero_person` 和 `aero_pin`，分别写入第 16、17 槽；旧包缺少时保留当前用户已有的 `Person`、`Pin` 值，并将保留值写回方案字符串，避免旧实现末尾 `,,` 清空新系统槽位。
+首版只处理原版定义的 15 个槽位。方案字符串仍保留第 16、17 个空字段，即以 `,,` 结束；不写 `Person`、`Pin` 当前值。包内出现 `aero_person` 或 `aero_pin` 时作为未知文件告警并忽略，避免未经确认扩展旧格式语义。
 
-每个选中的文件先用 `LoadCursorFromFileW` 验证可加载。目标目录名称使用“规范化源文件名 + 内容哈希短前缀”，保证稳定、无交互且不会因同秒应用两个主题碰撞，例如：
+每个选中的文件先用 `LoadCursorFromFileW` 验证可加载。普通 `theme apply` 按原版生成本地时间串 `DDHHMMSS`，同时作为方案名和目录名：
 
 ```text
-<SystemRoot>\Cursors\Edgeless\FirPE Experience-3a1f9c2d\
+<SystemRoot>\Cursors\13094527\
 ```
 
-EMS 不接受子目录。除上述 15 个标准基名和两个可选新槽位之外的普通文件只产生警告并被忽略；可执行文件、脚本和链接直接导致预检失败。
+其中示例表示 13 日 09:45:27。原版在同名目录已存在时进入交互式改名；CLI 首版不增加交互提示，改为在任何注册表副作用前返回 `AlreadyExists`，让调用方稍后重试。这只改变极少见冲突的错误路径，不改变正常成功路径的方案名、目录名和注册表映射。未来启动默认主题由 `theme store`/Loader 使用时，保留原版固定方案名 `Edgeless_Default`。
+
+EMS 不接受子目录。除上述 15 个标准基名之外的普通文件只产生警告并被忽略；可执行文件、脚本和链接直接导致预检失败。
 
 ### 10.2 注册表提交屏障
 
@@ -360,7 +375,7 @@ EMS 不接受子目录。除上述 15 个标准基名和两个可选新槽位之
 
 1. 将新目录发布到最终位置。
 2. 快照 `HKCU\Control Panel\Cursors` 中所有会改动的当前值、默认值和 `Schemes` 中目标方案值。
-3. 以 `REG_EXPAND_SZ` 写入 15/17 个当前光标路径；路径统一使用 `%SystemRoot%`。
+3. 以 `REG_EXPAND_SZ` 写入 15 个当前光标路径；路径统一使用 `%SystemRoot%`，不修改 `Person` 和 `Pin`。
 4. 以 `REG_SZ` 写入 `Schemes\<方案名>` 的完整逗号分隔槽位字符串。
 5. 将 `HKCU\Control Panel\Cursors` 默认值写为方案名。
 6. 关闭写句柄后重新打开键，以相同数据类型逐项读回并与计划值比较。
@@ -422,7 +437,7 @@ Rust 重构严格保留这项调用边界和时序语义，但不保留该二进
 
 `eli-lib` 应提供一个可复用的 `DesktopIconRefreshService` 内部能力。服务每次从稳定的 `<PE 系统卷>\Users\Icon\shortcut` 重新建立图标映射，再执行幂等桌面扫描，因此未来 Loader 不依赖 `theme apply` 的内存状态或临时文件。只有 `theme apply` 和未来 Loader 使用这项能力；`plugin load` 不接入，也不保留常驻轮询进程。
 
-主题应用中的第一次扫描属于 EIS 事务：任一匹配快捷方式保存失败会回滚 EIS。主题提交完成或 Loader 启动收尾阶段的补扫属于最终一致性刷新：逐链接记录成功/失败，失败产生警告并进入汇总，不回滚已经提交的主题或启动期已经加载的插件。
+主题应用时的即时扫描属于 EIS 事务：任一匹配快捷方式保存失败会回滚 EIS；`theme apply` 结束时不再扫描。只有 Loader 启动收尾阶段的扫描属于最终一致性刷新：逐链接记录成功/失败，失败产生警告并进入汇总，不回滚启动期已经加载的插件。
 
 桌面图标刷新另设同进程互斥量和跨进程 `desktop-icon-refresh.lock`，避免主题应用与 Loader 同时改写同一 `.lnk`。锁顺序固定为“主题全局锁 → 桌面图标刷新锁”；Loader 只获取桌面图标刷新锁，不反向获取主题锁，从而避免死锁。
 
@@ -432,7 +447,7 @@ Rust 重构严格保留这项调用边界和时序语义，但不保留该二进
 
 LoadScreen 是 PE 启动加载过程中展示的资源。用户能运行 `theme apply` 时，本次启动画面已经进入尾声或已经结束；把 ELS 转换成当前会话文件既不会复现旧版启动时序，也没有稳定的即时消费者。因此 `apply` 对 ELS 的行为固定为“识别、告警、跳过”。
 
-外层 `.els` 在完成扩展名识别和 `WindowsPE` 环境检查后直接返回 `Skipped`：不解析 `SevenZip` 依赖，不创建 staging，不打开归档，不转换图片，不写入启动盘或会话目录。嵌套 `LoadScreen.els` 只通过 `.eth` 的外层清单识别，同样不解压；同一个组件只输出一次警告。稳定消息至少包含以下关键语义，具体中英文措辞可由 CLI 本地化：
+外层 `.els` 在完成扩展名识别、`WindowsPE` 与 `EdgelessRuntime` 环境检查后直接返回 `Skipped`：不解析 `SevenZip` 依赖，不创建 staging，不打开归档，不转换图片，不写入启动盘或会话目录。嵌套 `LoadScreen.els` 只通过 `.eth` 的外层清单识别，同样不解压；同一个组件只输出一次警告。稳定消息至少包含以下关键语义，具体中英文措辞可由 CLI 本地化：
 
 ```text
 warning: legacy LoadScreen.els is a startup resource and cannot affect the current PE session; skipped by `eli theme apply`; use `eli theme store` after LSBP migration support is available
@@ -446,11 +461,12 @@ warning: legacy LoadScreen.els is a startup resource and cannot affect the curre
 
 - 根目录只接受 `load0.jpg`、`load1.jpg`、`load2.jpg`，至少一张、最多三张，并按内容验证为完整静态 JPEG。
 - 固定映射为 `load0 → lsbp_0000.webp`、`load1 → lsbp_0500.webp`、`load2 → lsbp_1000.webp`。
-- 缺少中间帧时不补 `0500`，播放器按“不大于当前进度的最大标记”继续显示上一张，与旧 `Pecmd.ini` 找不到 `load1/load2` 时维持上一界面的行为一致。
-- 缺少起点时，用最早存在图片补 `0000` 并告警；缺少终点时，用最后存在图片补 `1000`。只有一张时生成 `0000` 和 `1000` 两个条目。
+- 只转换实际存在的旧帧，不用其他图片补齐任何缺失标记。缺 `load0` 时继续显示进入 LoadScreen 前的既有界面，缺 `load1/load2` 时维持上一张，与旧 `Pecmd.ini` 和 `procLoadScreen.wcs` 一致。
 - 所有帧应用 EXIF 方向并规范化到同一尺寸，以质量 `90` 转换为 WebP，按标记升序写入根目录无外层文件夹的标准未压缩 tar；复用现有 LoadScreen 编解码能力。
 
-旧 `Pecmd.ini` 是按三个启动节点调用 `Edgeless_LoadScreen`，而新 Loader 的进度来自动态任务权重，无法也不应把旧节点精确换算成固定百分比。`0/50/100` 映射保留的是三张图片的先后顺序、缺帧时保持上一画面以及最终帧覆盖完整启动过程这三项可观察行为，而不是伪造旧脚本不存在的连续进度语义。
+旧 `Pecmd.ini` 是按三个启动节点调用 `Edgeless_LoadScreen`，而新 Loader 的进度来自动态任务权重，无法也不应把旧节点精确换算成固定百分比。`0/50/100` 映射保留的是三张图片的先后顺序和缺帧时维持既有画面的行为，而不是伪造旧脚本不存在的连续进度语义。
+
+现有通用 LSBP 播放契约要求同时存在 `0000` 和 `1000`，与上述旧 ELS 缺帧语义冲突。未来 Store 在要启用迁移前，必须先为 Legacy ELS 增加“首帧出现前沿用既有画面、末帧之后保持最后一帧”的兼容播放模式；若该模式尚未实现，则拒绝迁移缺少 `load0` 或 `load2` 的 ELS，不能通过复制别的帧悄悄改变表现。
 
 `theme store` 写入启动盘前必须执行启动盘发现：候选唯一时可使用该目标，存在多个候选且用户未通过全局 `--bootdisk` 显式指定时必须拒绝。迁移输出使用 Store 与 LoadScreen 共同定义的启动盘路径；不得复用或恢复本设计已删除的会话 `active.tar` 路径。
 
@@ -463,12 +479,13 @@ ESS 根目录必须恰好包含普通文件 `imageres.dll` 和 `imagesp1.dll`；
 1. 将两个新 DLL 准备在系统卷 staging 中。
 2. 快照当前 DLL 内容和安全描述符；会话内的“原始系统图标”备份只创建一次，后续主题不得覆盖它。
 3. 通过 Win32 安全 API 临时取得最低必要写权限，不调用 `takeown.exe` 或 `icacls.exe`。
-4. 在真正替换前请求 ShellController 停止当前会话的 Explorer；没有 Explorer 时继续。
-5. 分别原子替换两个文件并立即回读大小、哈希和 PE 头。
-6. 任一个失败时恢复两个旧文件及安全描述符。
-7. 成功后恢复目标文件应有的安全描述符。
-8. 只清理当前用户 Explorer 缓存目录中明确命名的 `iconcache_*.db`；不得像旧脚本一样删除目录内所有 `*.db`。
-9. 将 `RestartExplorer` 合并到最终刷新计划，由编排器确保 Explorer 最终被恢复。
+4. 保持 Explorer 当前状态，分别原子替换两个文件并立即回读大小、哈希和 PE 头；与原版一样先完成 DLL 替换，再处理 Shell。
+5. 任一个失败时恢复两个旧文件及安全描述符。
+6. 成功后恢复目标文件应有的安全描述符。
+7. 调用 `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, NULL, NULL)`，使 Shell 丢弃关联和命名空间图标状态；这是等价替代原版 `ENVI @@DeskTopFresh=clearicon;1` 对桌面、“此电脑”和图标缓存的刷新请求。
+8. 请求 ShellController 停止当前会话的 Explorer；没有 Explorer 时继续。
+9. 在当前 Shell 用户的 `AppData\Local\Microsoft\Windows\Explorer` 缓存目录中删除所有普通 `*.db` 文件，与原版 `setImageRes.wcs` 的范围一致；不得递归、不得越出该精确目录。
+10. 安全启动 Explorer 并等待桌面就绪，再返回编排器继续 EMS/EIS；该刷新不与 ESC 的末尾刷新合并。
 
 若 Explorer 已停止，无论后续成功还是失败，都必须在 finally 路径恢复 Shell。命令不得遗留一个因主题失败而没有桌面的 PE 会话。
 
@@ -481,31 +498,36 @@ ESS 根目录必须恰好包含普通文件 `imageres.dll` 和 `imagesp1.dll`；
 - 工作目录固定为 `%SystemRoot%\System32`，与旧应用路径一致。
 - 同步等待退出，设置统一超时，捕获退出码和标准错误。
 - 非零退出、超时或无法启动均为组件失败。
-- 成功后请求最终 `RestartExplorer`，但不立即重启。
+- 独立 `.esc` 成功后立即安全重启当前会话的 Explorer。
+- `.eth` 中的 ESC 成功后只设置待处理标记，在 EIS 应用完成后重启 Explorer，与原版 `needKE` 时序一致。
 
 `theme apply` 不执行 `Intro.wcs`。ESC 本身是规范允许的可执行配置载荷，无法在不完整实现 PECMD 的情况下证明其只含注册表命令；因此把“显式调用 apply”视为运行该主题配置的授权，并在错误汇总中标记 ESC 为不可自动回滚组件。
 
 ## 15. `.jpg` 壁纸
 
-独立 `.jpg` 或 `.eth` 中的 `WallPaper.jpg` 必须先按内容解码为有效静态 JPEG。文件复制到会话稳定路径后再调用：
+独立 `.jpg` 或 `.eth` 中的 `WallPaper.jpg` 必须先按内容解码为有效静态 JPEG。为保持原版 `setTheme.cmd` 的成功路径语义，壁纸仍交给 PECMD 的 `WALL` 命令应用，不用 `SystemParametersInfoW` 猜测 PECMD 的内部注册表和显示方式行为：
 
 ```text
-SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+pecmd.exe WALL <会话稳定路径的绝对 JPEG 路径>
 ```
 
-不能直接引用 `.eth` staging 中即将删除的图片。替换前记录旧壁纸注册表值和会话文件；API 失败时恢复旧文件和值，并尝试重新加载旧壁纸。成功后不重启 Explorer。
+PECMD 绝对路径由依赖管理模块提供，参数直接传给进程而不经过 `cmd.exe /c`，工作目录为 `%SystemRoot%\System32`。不能直接引用 `.eth` staging 中即将删除的图片，应先复制到会话稳定路径；替换前记录旧会话文件，PECMD 启动失败、超时或非零退出时恢复旧文件。成功后不额外重启 Explorer。
 
 ## 16. Shell 刷新策略
 
-各组件只返回刷新需求，不自行重复终止 Explorer：
+首版保留原版各组件的刷新位置，不跨组件合并 Explorer 重启：
 
-| 级别 | 来源 | 最终动作 |
-| --- | --- | --- |
-| `None` | 已跳过的 ELS | 无 |
-| `Notify` | EIS、EMS、壁纸 | 调用对应 Win32/Shell 通知 |
-| `RestartExplorer` | ESC、ESS | 合并为一次安全重启 |
+| 场景 | 动作 |
+| --- | --- |
+| 已跳过的 ELS | 无 |
+| 壁纸 | 调用 PECMD `WALL`，不额外重启 Explorer |
+| EMS | 注册表读回后调用 `SPI_SETCURSORS`，不重启 Explorer |
+| EIS | 修改匹配快捷方式并发送 Shell 变更通知，不重启 Explorer |
+| 独立 ESC | PECMD 成功后立即重启 Explorer |
+| `.eth` 中的 ESC | 延迟到 EIS 完成后重启 Explorer |
+| ESS | 替换资源、清理目标缓存后立即重启 Explorer 并等待恢复 |
 
-`RestartExplorer` 覆盖 `Notify`。编排器只处理当前会话、当前用户拥有的 Explorer，不按进程名杀死其他会话进程。重启后等待桌面窗口就绪并执行 EIS 第二次快捷方式扫描；等待有明确超时，超时返回“资源已提交但 Shell 恢复失败”的部分成功错误。
+若 `.eth` 同时包含 ESS 和 ESC，保留 ESS 阶段和组合主题末尾各一次 Explorer 重启。编排器只处理当前会话、当前用户拥有的 Explorer，不按进程名杀死其他会话进程。每次重启都必须等待桌面窗口就绪并设置明确超时；超时返回“资源已提交但 Shell 恢复失败”的部分成功错误。`theme apply` 不在末尾追加第二次 EIS 扫描；另一次扫描只存在于启动流程的 Loader/`EdgelessExit` 收尾点。
 
 ## 17. 并发、锁和失败语义
 
@@ -523,7 +545,7 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 
 - EIS、EMS、ESS、壁纸各自有独立 journal 和回滚；ELS 没有副作用，不创建 journal。
 - ESC 不能承诺通用回滚。
-- `.eth` 先完整预检、后串行提交，失败后停止领取后续组件。
+- `.eth` 先完整预检、后按原版顺序串行提交；单个组件运行期失败不阻止后续组件，并在最终统一汇总。
 - Shell 刷新在统一 finally 路径执行，确保 Explorer 不因中途错误永久退出。
 - staging 写入使用“临时文件 + flush + 同卷 rename/replace”，不把半成品暴露为活动资源。
 - 进程异常退出后，下次运行根据事务清单恢复未完成的文件级提交；清单不记录或回放 PECMD 脚本。
@@ -538,14 +560,15 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 | 硬编码 `X:`、`%ProgramFiles%\7-Zip` | 运行时路径解析 + 统一依赖管理 |
 | `%a:~-4,3%` 字符串切片识别扩展名 | `Path::extension` + 明确白名单 + 大小写不敏感比较 |
 | 无归档穿越和链接防护 | 解压前后双重校验和资源上限 |
-| EMS 通过控制面板和模拟回车补救 | 直接写当前 15/17 个值、读回、再调用 `SPI_SETCURSORS` |
+| EMS 通过控制面板和模拟回车补救 | 按原版写 15 个当前值和末尾两个空方案槽，读回后调用 `SPI_SETCURSORS` |
 | 用固定延时猜测注册表是否就绪 | 同步写入、句柄关闭、精确读回；不依赖 sleep |
 | EIS 运行 `setDesktopIcon.exe` | `IShellLinkW` + `IPersistFile` 直接修改 `.lnk` |
 | 遍历固定桌面路径 | Known Folder + PE 兼容目录 |
 | ELS 解压为最多三张 `load*.jpg` | `theme apply` 明确告警并跳过；未来 `theme store` 再迁移为 LSBP |
-| ESS 删除所有 Explorer `*.db` | 只处理明确的图标缓存文件 |
+| 壁纸通过 PECMD `WALL` 应用 | 保留 PECMD `WALL`，仅把输入先发布到稳定会话路径 |
+| ESS 直接通配删除 Explorer `*.db` | 在解析并校验当前 Shell 用户的精确 Explorer 缓存目录后，删除该目录第一层全部普通 `*.db`，保持原版失效范围 |
 | 多个进程可交叉覆盖全局状态 | 进程内 mutex + 跨进程独占文件锁 |
-| 每个组件各自杀 Explorer | 聚合为一次刷新并保证 finally 恢复 |
+| 旧脚本直接按进程名终止 Explorer | 保留原版刷新次数与先后位置，但只安全重启当前用户/会话的 Explorer，并保证失败时恢复 |
 | `Intro.wcs` 随打开主题包执行 | `theme apply` 永不执行 Intro；未来 UI 命令另行设计 |
 
 ## 19. 测试设计
@@ -554,24 +577,25 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 
 - 所有支持扩展名的大小写组合均正确路由。
 - 未知扩展名、无扩展名、目录和非普通文件在副作用前拒绝。
-- `.eth` 根组件发现、固定顺序、重复大小写碰撞和空主题。
+- `.eth` 根组件发现、原版 `壁纸→ELS(skip)→ESC→ESS→EMS→EIS→ESC末尾重启` 顺序、重复大小写碰撞；空主题作为无副作用成功。
 - 独立 `.els` 在环境检查后只输出一次稳定警告并返回 `Skipped`，不解析 7-Zip、不创建 staging。
 - 仅含 `LoadScreen.els` 的 `.eth` 返回成功的 `0 Applied / 1 Skipped`；含其他组件时不阻止其应用。
 - 归档绝对路径、`..`、ADS、链接、设备名、加密和资源上限拒绝。
 - 所有组件预检完成前不会调用提交后端。
-- 组件失败时后续组件不执行，汇总准确标记部分应用。
+- 组件运行期失败时后续组件继续执行，汇总准确标记全部成功、跳过和失败项。
 - 多线程同时调用时，假的提交后端最大并发数始终为 1。
+- 任意 Windows PE 但未通过 OEM 厂商或 `systemcpl.dll(.mun)` 文本门禁时，在副作用前返回 `EdgelessRuntime` 不满足。
 
 这些测试在 Windows、Linux、macOS CI 都运行，不需要真实注册表或 Shell。
 
 ### 19.2 EMS 测试
 
 - 15 个标准槽位映射和方案字符串顺序。
-- `.ani` 优先、缺槽失败、Person/Pin 保留。
+- `.ani` 优先、缺槽失败；方案末尾保留两个空字段且不修改 Person/Pin 当前值。
 - 所有注册表值读回成功后才允许调用 SPI。
 - 任意读回不一致时不调用 SPI，并完整恢复快照。
 - `SystemParametersInfoW` 失败时回滚后再次加载旧光标。
-- 同名包重复应用得到稳定目录，不出现时间戳碰撞。
+- 正常应用生成原版格式的 `DDHHMMSS` 方案名和目录；同秒冲突在副作用前返回 `AlreadyExists`。
 - Explorer 用户/会话不匹配时拒绝写错误的 HKCU。
 
 ### 19.3 EIS 测试
@@ -581,7 +605,7 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 - 包内大小写折叠碰撞会拒绝。
 - 损坏 `.lnk`、只读文件和分享冲突触发完整 EIS 回滚。
 - 未匹配/未使用统计正确。
-- 第二次扫描能处理两次扫描之间新增的快捷方式。
+- `theme apply` 只执行 EIS 即时扫描，命令末尾不会再调用刷新服务。
 - Loader 等到启动期全部快捷方式生产者进入终态后才执行一次收尾扫描，并能处理启动插件新建的快捷方式。
 - 独立 `plugin load` 完成后不会调用桌面图标刷新服务。
 - 主题应用和 Loader 同时请求刷新时由同进程/跨进程锁串行化，且遵守固定锁顺序。
@@ -598,8 +622,9 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 以下是未来 `theme store` 实现时必须补充的契约测试，本次不创建占位实现：
 
 - 三张完整输入映射为 `0000/0500/1000`。
-- 缺少 `load1` 时不存在 `0500`，播放选择规则会维持上一帧。
-- 只有 `load0`、只有 `load1`、只有 `load2` 以及任意两张时正确补齐端点。
+- 缺少哪张就不生成对应标记，不从其他图片补帧。
+- Legacy ELS 兼容播放模式在首帧出现前维持既有界面，在最后一帧后维持该帧。
+- 兼容播放模式未实现时，缺少 `load0` 或 `load2` 的输入会被 Store 拒绝而不是改变表现。
 - 不同尺寸和 EXIF 方向被规范化为同一尺寸。
 - 输出为未压缩 tar，根目录条目有序且均可解码为 WebP。
 - 多启动盘且没有显式 `--bootdisk` 时拒绝写入。
@@ -608,10 +633,15 @@ SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, <绝对路径>, SPIF_UPDATEINIFIL
 
 - ESS 缺任一 DLL、错误 machine、损坏 PE、额外条目时拒绝。
 - 第二个 DLL 替换失败时恢复两个旧 DLL 和安全描述符。
+- ESS 在替换 DLL 后、停止 Explorer 前发出带 flush 语义的 `SHCNE_ASSOCCHANGED`，覆盖原版 `DeskTopFresh=clearicon;1` 的刷新效果。
+- ESS 停止 Explorer 后删除精确缓存目录第一层的全部普通 `*.db`，不越界也不缩小原版失效范围。
 - Explorer 已停止时，无论成功失败均会恢复。
 - ESC 使用中台返回的 PECMD 绝对路径、固定参数、工作目录和超时。
 - ESC 超时/非零退出产生不可回滚部分失败标记。
-- 壁纸源 staging 删除后，系统仍引用稳定会话路径。
+- 独立 ESC 成功后立即重启 Explorer；`.eth` 中 ESC 延迟到 EIS 后重启。
+- `.eth` 同时包含 ESS 与 ESC 时按原版时序发生两次安全重启，不被聚合。
+- 壁纸使用中台返回的 PECMD 绝对路径和 `WALL <稳定绝对路径>` 参数，成功后不额外重启 Explorer。
+- 壁纸源 staging 删除后，PECMD 使用的稳定会话路径仍存在。
 
 ### 19.6 E2E 与实机验收
 
@@ -646,8 +676,8 @@ Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known 
 3. 实现 ELS 的稳定告警/跳过语义，不引入 LoadScreen 转换与发布代码。
 4. 实现 EMS 文件验证、注册表快照/读回屏障和 SPI 刷新。
 5. 实现共享桌面图标服务、EIS 图标事务、Known Folder 枚举和 Shell Link 修改；为未来 Loader 暴露启动收尾入口，但不接入 `plugin load`。
-6. 实现壁纸与 ESC，并合并 Shell 刷新请求。
-7. 实现 ESS 权限、双文件回滚、定向缓存清理和 Explorer 生命周期。
+6. 实现壁纸与 ESC，并按独立/组合场景保留原版 Explorer 刷新时机。
+7. 实现 ESS 权限、双文件回滚、精确目录缓存清理和 Explorer 生命周期。
 8. 补齐 Windows PE E2E、Loader 启动图标收尾、故障注入、并发测试和 FirPE 样包实机验收。
 
 未来 `theme store` 及 ELS→LSBP 持久化迁移单独立项，不纳入以上阶段。
@@ -657,5 +687,8 @@ Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known 
 本轮评审已确认以下边界，后续实现不得自行改变：
 
 1. `theme apply` 只作用于当前 PE 会话；“保存为启动盘默认主题”属于未来的 `eli theme store`。
-2. `theme apply` 遇到 ELS 只打印警告并跳过。未来 Store 迁移采用固定 `0%/50%/100%` 映射，并以帧顺序、缺帧维持上一画面和终点覆盖作为旧 `Pecmd.ini` 行为兼容标准。
+2. `theme apply` 遇到 ELS 只打印警告并跳过。未来 Store 迁移采用固定 `0%/50%/100%` 映射，只转换实际存在的帧，不补缺失端点，并以缺帧维持既有画面作为旧 `Pecmd.ini` 行为兼容标准。
 3. `.esc` 交由依赖管理中台解析出的 PECMD 执行；不在 Eli 内实现 PECMD/WCS 解释器。
+4. `theme apply` 保留原版 Edgeless 品牌门禁；实现集中在依赖管理模块的 `EdgelessRuntime` 能力中。
+5. `.eth` 保留原版组件顺序和 Explorer 刷新位置；`theme apply` 不在末尾追加第二次 EIS 扫描。
+6. 独立 `plugin load` 后不刷新桌面快捷方式图标；只保留 EIS 应用后的即时刷新和 Loader 启动收尾刷新。
