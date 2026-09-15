@@ -10,6 +10,7 @@ pub(super) mod eis;
 pub(super) mod ems;
 pub(super) mod esc;
 pub(super) mod ess;
+pub(super) mod event_log;
 pub(super) mod refresh;
 #[cfg(test)]
 pub mod test_support;
@@ -85,6 +86,8 @@ pub enum ComponentStatus {
 pub struct ComponentOutcome {
     pub component: ThemeComponent,
     pub status: ComponentStatus,
+    /// 失败来自 Win32/系统 I/O 时保留原始错误码；逻辑校验失败为 None。
+    pub windows_error_code: Option<i32>,
 }
 
 /// EIS 快捷方式修改统计。
@@ -184,14 +187,20 @@ impl ThemePaths {
 }
 
 /// 光标注册表快照（撤销 EMS 写入用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryValueSnapshot {
+    pub value_type: u32,
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CursorSnapshot {
     /// 17 个槽位的当前值；None 表示 HKCU 中没有该槽位。
-    pub slots: [Option<String>; 17],
+    pub slots: [Option<RegistryValueSnapshot>; 17],
     /// HKCU\Control Panel\Cursors 的默认值（当前方案名）。
-    pub default_scheme: Option<String>,
+    pub default_scheme: Option<RegistryValueSnapshot>,
     /// HKCU\Control Panel\Cursors\Schemes\<目标方案> 的现值；None 表示原本不存在。
-    pub target_scheme: Option<String>,
+    pub target_scheme: Option<RegistryValueSnapshot>,
     /// 本次写入的方案名。
     pub scheme_name: String,
 }
@@ -247,8 +256,11 @@ pub trait ThemeBackend: Send + Sync {
     fn remove_cursor_directory(&self, directory: &Path) -> io::Result<()>;
     /// 通知系统重载光标（SPI_SETCURSORS）。
     fn refresh_cursors(&self) -> io::Result<()>;
-    /// 修改 .lnk 的图标位置（不改变其他字段）。
-    fn modify_shortcut_icon(&self, link: &Path, icon: &Path) -> io::Result<()>;
+    /// 在专用单线程 COM STA 中批量修改 .lnk 图标；逐项结果与输入顺序一致。
+    fn modify_shortcut_icons(
+        &self,
+        changes: &[(PathBuf, PathBuf)],
+    ) -> io::Result<Vec<io::Result<()>>>;
     /// 对成功修改的 .lnk 发送定点 Shell 通知。
     fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()>;
     /// 当前会话是否正在运行 Explorer。

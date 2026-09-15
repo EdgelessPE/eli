@@ -54,12 +54,14 @@ fn is_device_name(component: &str) -> bool {
     if basic.contains(&upper.as_str()) {
         return true;
     }
-    for prefix in ["CON", "COM", "LPT"] {
-        if upper.len() == 4
-            && upper.starts_with(prefix)
-            && let Some(digit) = upper.as_bytes().get(3)
-            && (b'1'..=b'9').contains(digit)
-        {
+    for prefix in ["COM", "LPT"] {
+        let Some(suffix) = upper.strip_prefix(prefix) else {
+            continue;
+        };
+        if matches!(
+            suffix,
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+        ) {
             return true;
         }
     }
@@ -465,9 +467,11 @@ SymLink = +
         assert!(is_device_name("CON.txt"));
         assert!(is_device_name("COM9"));
         assert!(is_device_name("LPT3.log"));
+        assert!(is_device_name("COM¹.txt"));
         assert!(is_device_name("NUL"));
         assert!(!is_device_name("console.txt"));
         assert!(!is_device_name("COMMAND"));
+        assert!(!is_device_name("CON1"));
         assert!(!is_device_name("com0"));
     }
 }

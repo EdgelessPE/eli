@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use super::archive::{EIS_LIMITS, validate_listing, verify_extraction};
 use super::refresh::RefreshPlan;
-use super::transaction::case_fold;
+use super::transaction::{case_fold, ensure_safe_publish_path};
 use super::{EisStats, ThemeBackend, ThemePaths};
 
 /// 可发布的静态图片扩展名（与 image crate 当前启用的解码器一致）。
@@ -174,9 +174,21 @@ pub fn commit_eis(
     backend: &dyn ThemeBackend,
     paths: &ThemePaths,
     refresh: &mut RefreshPlan,
-) -> io::Result<EisStats> {
+) -> io::Result<(EisStats, Vec<String>)> {
+    if !prepared.shortcut_icons.is_empty()
+        && !paths.desktop_roots.iter().any(|root| {
+            std::fs::symlink_metadata(root)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "EIS contains shortcut icons, but no current, public, or Edgeless compatibility desktop directory is available",
+        ));
+    }
     for (relative, source) in &prepared.publish_files {
         let destination = paths.icon_root.join(relative);
+        ensure_safe_publish_path(&paths.icon_root, &destination)?;
         let parent = destination.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -184,6 +196,7 @@ pub fn commit_eis(
             )
         })?;
         std::fs::create_dir_all(parent)?;
+        ensure_safe_publish_path(&paths.icon_root, &destination)?;
         if source.is_dir() {
             continue;
         }
@@ -196,7 +209,8 @@ pub fn commit_eis(
     }
 
     let mut stats = EisStats::default();
-    let mut notified = Vec::new();
+    let mut failures = Vec::new();
+    let mut changes = Vec::new();
     for (stem, _source, relative) in &prepared.shortcut_icons {
         let links = find_links_by_stem(paths, stem)?;
         if links.is_empty() {
@@ -205,21 +219,37 @@ pub fn commit_eis(
         }
         let icon = paths.icon_root.join(relative);
         for link in links {
-            match backend.modify_shortcut_icon(&link, &icon) {
-                Ok(()) => {
-                    stats.updated += 1;
-                    notified.push(link);
-                }
-                Err(_error) => {
-                    stats.failed += 1;
-                }
+            changes.push((link, icon.clone()));
+        }
+    }
+    let results = backend.modify_shortcut_icons(&changes)?;
+    if results.len() != changes.len() {
+        return Err(io::Error::other(format!(
+            "Shell Link STA worker returned {} results for {} changes",
+            results.len(),
+            changes.len()
+        )));
+    }
+    let mut notified = Vec::new();
+    for ((link, _), result) in changes.into_iter().zip(results) {
+        match result {
+            Ok(()) => {
+                stats.updated += 1;
+                notified.push(link);
+            }
+            Err(error) => {
+                stats.failed += 1;
+                failures.push(format!(
+                    "failed to modify shortcut {}: {error}",
+                    link.display()
+                ));
             }
         }
     }
     for link in notified {
         refresh.request(super::refresh::RefreshRequest::ShortcutNotify(link));
     }
-    Ok(stats)
+    Ok((stats, failures))
 }
 
 /// 在每个桌面根目录中直接构造 `<stem>.lnk` 候选，不扫描桌面其他项目。
@@ -346,6 +376,34 @@ mod tests {
         let links = find_links_by_stem(&paths, "App").unwrap();
 
         assert_eq!(links, vec![first.join("App.lnk"), second.join("App.lnk")]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_shortcut_updates_when_no_desktop_directory_is_available() {
+        let root = test_root();
+        let missing_desktop = root.join("missing-desktop");
+        let backend = FakeBackend::new(root.join("vol"));
+        let paths = paths_at(&root, &missing_desktop);
+        let prepared = PreparedEis {
+            publish_files: Vec::new(),
+            shortcut_icons: vec![(
+                "App".to_owned(),
+                root.join("staging/shortcut/App.ico"),
+                "shortcut/App.ico".to_owned(),
+            )],
+        };
+
+        let error = commit_eis(
+            &prepared,
+            &backend,
+            &paths,
+            &mut RefreshPlan::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("no current, public"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

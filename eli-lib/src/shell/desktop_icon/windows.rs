@@ -6,7 +6,7 @@
 
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 use windows_sys::core::{GUID, PCWSTR, PWSTR};
@@ -115,9 +115,24 @@ unsafe fn vtable<T>(interface: *mut core::ffi::c_void) -> &'static T {
     unsafe { &**(interface as *mut *const T) }
 }
 
-pub(super) fn set_icon_location(link: &Path, icon: &Path) -> io::Result<()> {
-    let _apartment = ComApartment::initialize_sta()?;
+pub(super) fn set_icon_locations(
+    changes: &[(PathBuf, PathBuf)],
+) -> io::Result<Vec<io::Result<()>>> {
+    let changes = changes.to_vec();
+    std::thread::Builder::new()
+        .name("eli-shell-link-sta".to_owned())
+        .spawn(move || {
+            let _apartment = ComApartment::initialize_sta()?;
+            Ok(changes
+                .iter()
+                .map(|(link, icon)| set_icon_location_in_apartment(link, icon))
+                .collect())
+        })?
+        .join()
+        .map_err(|_| io::Error::other("Shell Link STA worker panicked"))?
+}
 
+fn set_icon_location_in_apartment(link: &Path, icon: &Path) -> io::Result<()> {
     let mut shell_link: *mut core::ffi::c_void = ptr::null_mut();
     let hr = unsafe {
         windows_sys::Win32::System::Com::CoCreateInstance(
@@ -281,7 +296,11 @@ mod tests {
             }
         }
 
-        set_icon_location(&link, &icon).unwrap();
+        super::set_icon_locations(&[(link.clone(), icon.clone())])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
 
         {
             let _apartment = ComApartment::initialize_sta().unwrap();

@@ -52,8 +52,15 @@ fn print_summary(summary: &ApplySummary) {
                 println!("Skipped {}", outcome.component.display_name());
             }
             ComponentStatus::Failed(error) => {
+                let phase = if outcome.component
+                    == eli_lib::command::theme::ThemeComponent::SystemIconPack
+                {
+                    "refresh"
+                } else {
+                    "commit"
+                };
                 eprintln!(
-                    "Failed {} from {} during apply: {error}",
+                    "Failed {} from {} during {phase}: {error}",
                     outcome.component.display_name(),
                     summary.source.display()
                 );

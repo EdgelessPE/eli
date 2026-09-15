@@ -42,8 +42,10 @@ pub struct StagingDir {
 
 impl StagingDir {
     pub fn create(paths: &ThemePaths) -> io::Result<Self> {
+        ensure_existing_directory_not_reparse(&paths.staging_root)?;
         let path = paths.staging_root.join(unique_transaction_id());
         fs::create_dir_all(&path)?;
+        ensure_safe_publish_path(&paths.staging_root, &path)?;
         Ok(Self { path })
     }
 
@@ -272,50 +274,66 @@ fn write_through(path: &Path, contents: &[u8]) -> io::Result<()> {
 pub fn case_fold(value: &str) -> String {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-        use windows_sys::Win32::Globalization::{
-            LCMAP_LINGUISTIC_CASING, LCMAP_UPPERCASE, LCMapStringW,
-        };
-
-        let wide = std::ffi::OsStr::new(value)
-            .encode_wide()
-            .collect::<Vec<_>>();
-        let needed = unsafe {
-            LCMapStringW(
-                0,
-                LCMAP_UPPERCASE | LCMAP_LINGUISTIC_CASING,
-                wide.as_ptr(),
-                wide.len() as i32,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if needed <= 0 {
-            return value.to_uppercase();
-        }
-        let mut mapped = vec![0u16; needed as usize];
-        let written = unsafe {
-            LCMapStringW(
-                0,
-                LCMAP_UPPERCASE | LCMAP_LINGUISTIC_CASING,
-                wide.as_ptr(),
-                wide.len() as i32,
-                mapped.as_mut_ptr(),
-                mapped.len() as i32,
-            )
-        };
-        if written <= 0 {
-            return value.to_uppercase();
-        }
-        mapped.truncate(written as usize);
-        std::ffi::OsString::from_wide(&mapped)
-            .to_string_lossy()
-            .into_owned()
+        case_fold_windows(value).unwrap_or_else(|| value.to_uppercase())
     }
     #[cfg(not(windows))]
     {
         value.to_uppercase()
     }
+}
+
+#[cfg(windows)]
+fn case_fold_windows(value: &str) -> Option<String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Globalization::{
+        LCMAP_LINGUISTIC_CASING, LCMAP_UPPERCASE, LCMapStringEx, LOCALE_NAME_INVARIANT,
+    };
+
+    let wide = std::ffi::OsStr::new(value)
+        .encode_wide()
+        .collect::<Vec<_>>();
+    if wide.is_empty() {
+        return Some(String::new());
+    }
+    let needed = unsafe {
+        LCMapStringEx(
+            LOCALE_NAME_INVARIANT,
+            LCMAP_UPPERCASE | LCMAP_LINGUISTIC_CASING,
+            wide.as_ptr(),
+            wide.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    };
+    if needed <= 0 {
+        return None;
+    }
+    let mut mapped = vec![0u16; needed as usize];
+    let written = unsafe {
+        LCMapStringEx(
+            LOCALE_NAME_INVARIANT,
+            LCMAP_UPPERCASE | LCMAP_LINGUISTIC_CASING,
+            wide.as_ptr(),
+            wide.len() as i32,
+            mapped.as_mut_ptr(),
+            mapped.len() as i32,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    mapped.truncate(written as usize);
+    Some(
+        std::ffi::OsString::from_wide(&mapped)
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// 校验候选路径仍位于根目录内（组件级路径前缀校验）。
@@ -336,6 +354,120 @@ pub fn path_is_within(root: &Path, candidate: &Path) -> bool {
         .iter()
         .collect::<PathBuf>();
     root_prefix == candidate_prefix
+}
+
+/// 校验发布路径在词法和文件系统层面都不会经符号链接或重解析点越出根目录。
+///
+/// 不存在的目录组件允许由调用方随后创建；已经存在的组件必须是普通目录，
+/// 目标本身若已存在则必须是普通文件或目录。
+pub fn ensure_safe_publish_path(root: &Path, destination: &Path) -> io::Result<()> {
+    use std::path::Component;
+
+    let relative = destination.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "publish destination escapes its root: {} is not under {}",
+                destination.display(),
+                root.display()
+            ),
+        )
+    })?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "publish destination contains a non-normal path component: {}",
+                destination.display()
+            ),
+        ));
+    }
+
+    ensure_existing_directory_not_reparse(root)?;
+    let mut current = root.to_owned();
+    let components = relative.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if metadata_is_link_like(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "publish path contains a symbolic link or reparse point: {}",
+                    current.display()
+                ),
+            ));
+        }
+        let is_destination = index + 1 == components.len();
+        if (!is_destination && !metadata.is_dir())
+            || (is_destination && !metadata.is_dir() && !metadata.is_file())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "publish path contains an unsupported entry: {}",
+                    current.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 校验一个已存在的目录及其现有祖先都不是符号链接或 Windows 重解析点。
+pub fn ensure_existing_directory_not_reparse(directory: &Path) -> io::Result<()> {
+    let mut ancestors = directory.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if metadata_is_link_like(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "directory contains a symbolic link or reparse point: {}",
+                    ancestor.display()
+                ),
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "directory path contains a non-directory: {}",
+                    ancestor.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 /// 以 Windows 忽略大小写的语义比较两个文件名是否相同。
@@ -407,6 +539,15 @@ mod tests {
         assert!(name_matches("aero_arrow.ANI", "Aero_Arrow.ani"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_unicode_fold_uses_a_valid_invariant_locale() {
+        let mapped =
+            case_fold_windows("møbel-δ").expect("LCMapStringEx should accept invariant locale");
+        assert_eq!(mapped, case_fold("møbel-δ"));
+        assert_ne!(mapped, "møbel-δ");
+    }
+
     #[test]
     fn detects_whether_a_path_stays_inside_a_root() {
         let root = Path::new("/tmp/root");
@@ -414,6 +555,22 @@ mod tests {
         assert!(path_is_within(root, Path::new("/tmp/root")));
         assert!(!path_is_within(root, Path::new("/tmp/rooted/a.txt")));
         assert!(!path_is_within(root, Path::new("/tmp/root/../a.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_publish_paths_that_cross_an_existing_symbolic_link() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_dir();
+        let outside = test_dir();
+        symlink(&outside, root.join("linked")).unwrap();
+
+        let error = ensure_safe_publish_path(&root, &root.join("linked/icon.ico")).unwrap_err();
+
+        assert!(error.to_string().contains("symbolic link"));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

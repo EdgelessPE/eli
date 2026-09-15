@@ -18,7 +18,7 @@ use crate::dependency::ProgramDependency;
 use super::archive::{ArchiveEntry, parse_listing};
 use super::ems::{BASE_SLOTS, OPTIONAL_SLOTS, scheme_field_string};
 use super::transaction::publish_directory_atomically;
-use super::{CursorSnapshot, ThemeBackend, ThemePaths};
+use super::{CursorSnapshot, RegistryValueSnapshot, ThemeBackend, ThemePaths};
 
 /// 主题提交全局 mutex（本地会话）。等待采用有界超时；超时返回 WouldBlock。
 const THEME_APPLY_MUTEX_NAME: &str = "Local\\Edgeless.Eli.ThemeApply";
@@ -194,7 +194,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
                 .chain(OPTIONAL_SLOTS.iter())
                 .map(|(_, registry_name)| *registry_name);
             for (slot, registry_name) in names.enumerate() {
-                slots[slot] = read_registry_wide(cursors_key, registry_name)?;
+                slots[slot] = read_registry_value(cursors_key, registry_name)?;
             }
             Ok(())
         })();
@@ -203,7 +203,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
         }
         slots_result?;
         let schemes_key = open_schemes_key(false)?;
-        let scheme_value = read_registry_wide(schemes_key, target_scheme);
+        let scheme_value = read_registry_value(schemes_key, target_scheme);
         unsafe {
             windows_sys::Win32::System::Registry::RegCloseKey(schemes_key);
         }
@@ -264,7 +264,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
                     .map(|(_, registry_name)| *registry_name);
                 for (slot, registry_name) in names.enumerate() {
                     let result = match &snapshot.slots[slot] {
-                        Some(value) => set_registry_wide(key, registry_name, value, REG_EXPAND_SZ),
+                        Some(value) => set_registry_value(key, registry_name, value),
                         None => delete_registry_wide(key, registry_name),
                     };
                     if let Err(error) = result {
@@ -272,7 +272,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
                     }
                 }
                 let default_result = match &snapshot.default_scheme {
-                    Some(value) => set_registry_wide(key, "", value, REG_SZ),
+                    Some(value) => set_registry_value(key, "", value),
                     None => delete_registry_wide(key, ""),
                 };
                 if let Err(error) = default_result {
@@ -288,7 +288,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
         match open_schemes_key(true) {
             Ok(key) => {
                 let result = match &snapshot.target_scheme {
-                    Some(value) => set_registry_wide(key, &snapshot.scheme_name, value, REG_SZ),
+                    Some(value) => set_registry_value(key, &snapshot.scheme_name, value),
                     None => delete_registry_wide(key, &snapshot.scheme_name),
                 };
                 if let Err(error) = result {
@@ -312,7 +312,9 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
     }
 
     fn publish_cursor_directory(&self, source: &Path, id: &str) -> io::Result<PathBuf> {
-        let destination = self.paths()?.cursor_root.join(id);
+        let paths = self.paths()?;
+        let destination = paths.cursor_root.join(id);
+        super::transaction::ensure_safe_publish_path(&paths.cursor_root, &destination)?;
         publish_directory_atomically(source, &destination)?;
         Ok(destination)
     }
@@ -339,8 +341,11 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
         }
     }
 
-    fn modify_shortcut_icon(&self, link: &Path, icon: &Path) -> io::Result<()> {
-        crate::shell::desktop_icon::set_icon_location(link, icon)
+    fn modify_shortcut_icons(
+        &self,
+        changes: &[(PathBuf, PathBuf)],
+    ) -> io::Result<Vec<io::Result<()>>> {
+        crate::shell::desktop_icon::set_icon_locations(changes)
     }
 
     fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()> {
@@ -495,21 +500,27 @@ fn resolve_desktop_roots(system_volume: &Path) -> io::Result<Vec<PathBuf>> {
     use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_PublicDesktop};
 
     let mut roots = Vec::new();
-    if let Ok(current) = known_folder_path(&FOLDERID_Desktop)
-        && !roots.contains(&current)
-    {
-        roots.push(current);
+    if let Ok(current) = known_folder_path(&FOLDERID_Desktop) {
+        push_unique_windows_path(&mut roots, current);
     }
-    if let Ok(public) = known_folder_path(&FOLDERID_PublicDesktop)
-        && !roots.contains(&public)
-    {
-        roots.push(public);
+    if let Ok(public) = known_folder_path(&FOLDERID_PublicDesktop) {
+        push_unique_windows_path(&mut roots, public);
     }
     let compat = system_volume.join("Users").join("Default").join("Desktop");
-    if compat.is_dir() && !roots.contains(&compat) {
-        roots.push(compat);
+    if compat.is_dir() {
+        push_unique_windows_path(&mut roots, compat);
     }
     Ok(roots)
+}
+
+fn push_unique_windows_path(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
+    let folded = super::transaction::case_fold(&candidate.to_string_lossy());
+    if !roots
+        .iter()
+        .any(|root| super::transaction::case_fold(&root.to_string_lossy()) == folded)
+    {
+        roots.push(candidate);
+    }
 }
 
 fn resolve_icon_cache_dir() -> io::Result<PathBuf> {
@@ -816,19 +827,22 @@ fn open_registry_key(root: RegistryKey, key_path: &str, write: bool) -> io::Resu
     }
 }
 
-fn read_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<Option<String>> {
-    use std::os::windows::ffi::OsStringExt;
+fn read_registry_value(
+    key: RegistryKey,
+    value_name: &str,
+) -> io::Result<Option<RegistryValueSnapshot>> {
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Registry::RegQueryValueExW;
 
     let name = value_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
     let mut length = 0u32;
+    let mut value_type = 0u32;
     let status = unsafe {
         RegQueryValueExW(
             key,
             name.as_ptr(),
             ptr::null(),
-            ptr::null_mut(),
+            &mut value_type,
             ptr::null_mut(),
             &mut length,
         )
@@ -845,7 +859,7 @@ fn read_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<Option<S
             key,
             name.as_ptr(),
             ptr::null(),
-            ptr::null_mut(),
+            &mut value_type,
             buffer.as_mut_ptr(),
             &mut length,
         )
@@ -854,16 +868,10 @@ fn read_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<Option<S
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     buffer.truncate(length as usize);
-    let mut wide = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect::<Vec<_>>();
-    if wide.last() == Some(&0) {
-        wide.pop();
-    }
-    Ok(Some(
-        OsString::from_wide(&wide).to_string_lossy().into_owned(),
-    ))
+    Ok(Some(RegistryValueSnapshot {
+        value_type,
+        data: buffer,
+    }))
 }
 
 fn set_registry_wide(
@@ -898,6 +906,36 @@ fn set_registry_wide(
     }
 }
 
+fn set_registry_value(
+    key: RegistryKey,
+    value_name: &str,
+    value: &RegistryValueSnapshot,
+) -> io::Result<()> {
+    use windows_sys::Win32::System::Registry::RegSetValueExW;
+
+    let name = value_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let data = if value.data.is_empty() {
+        ptr::null()
+    } else {
+        value.data.as_ptr()
+    };
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            name.as_ptr(),
+            0,
+            value.value_type,
+            data,
+            value.data.len() as u32,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    }
+}
+
 fn delete_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<()> {
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Registry::RegDeleteValueW;
@@ -911,9 +949,9 @@ fn delete_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<()> {
     }
 }
 
-fn read_cursors_default() -> io::Result<Option<String>> {
+fn read_cursors_default() -> io::Result<Option<RegistryValueSnapshot>> {
     let key = open_cursors_key(false)?;
-    let result = read_registry_wide(key, "");
+    let result = read_registry_value(key, "");
     unsafe {
         windows_sys::Win32::System::Registry::RegCloseKey(key);
     }
@@ -1179,7 +1217,7 @@ fn with_temporary_write_permission_impl(
     };
     use windows_sys::Win32::Security::{
         ACL, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID,
+        PSECURITY_DESCRIPTOR, PSID, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME,
     };
     use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
 
@@ -1240,8 +1278,70 @@ fn with_temporary_write_permission_impl(
             ptr::null_mut(),
         )
     };
-    if status != 0 {
+    if status == 0 {
+        let operation_result = operation();
+        let restore_status = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                dacl,
+                ptr::null_mut(),
+            )
+        };
+        return finish_temporary_permission(operation_result, restore_status);
+    }
+    if status != windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED {
         return Err(io::Error::from_raw_os_error(status as i32));
+    }
+
+    // 受保护文件通常不允许直接改 DACL。先确保两个特权都可用，避免接管所有权后
+    // 才发现无法恢复原所有者；随后只在本次操作期间临时接管并在末尾完整还原。
+    let _take_ownership = enable_process_privilege(SE_TAKE_OWNERSHIP_NAME)?;
+    let _restore = enable_process_privilege(SE_RESTORE_NAME)?;
+    let owner_status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            sid.as_ptr() as PSID,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    if owner_status != 0 {
+        return Err(io::Error::from_raw_os_error(owner_status as i32));
+    }
+    let dacl_status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            new_dacl,
+            ptr::null_mut(),
+        )
+    };
+    if dacl_status != 0 {
+        let restore_status = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                owner,
+                group,
+                dacl,
+                ptr::null_mut(),
+            )
+        };
+        return finish_temporary_permission(
+            Err(io::Error::from_raw_os_error(dacl_status as i32)),
+            restore_status,
+        );
     }
     let operation_result = operation();
     let restore_status = unsafe {
@@ -1252,16 +1352,20 @@ fn with_temporary_write_permission_impl(
             owner,
             group,
             dacl,
-            sacl,
+            ptr::null_mut(),
         )
-    };
-    let restore_error = if restore_status != 0 {
-        Some(io::Error::from_raw_os_error(restore_status as i32))
-    } else {
-        None
     };
     drop(new_dacl_guard);
     drop(descriptor_guard);
+    finish_temporary_permission(operation_result, restore_status)
+}
+
+fn finish_temporary_permission(
+    operation_result: io::Result<()>,
+    restore_status: u32,
+) -> io::Result<()> {
+    let restore_error =
+        (restore_status != 0).then(|| io::Error::from_raw_os_error(restore_status as i32));
     match (operation_result, restore_error) {
         (Ok(()), None) => Ok(()),
         (Ok(()), Some(restore_error)) => Err(io::Error::new(
@@ -1277,6 +1381,94 @@ fn with_temporary_write_permission_impl(
                 "{operation_error}; restoring the original security descriptor also failed: {restore_error}"
             ),
         )),
+    }
+}
+
+struct TokenPrivilegeGuard {
+    token: windows_sys::Win32::Foundation::HANDLE,
+    previous: windows_sys::Win32::Security::TOKEN_PRIVILEGES,
+}
+
+fn enable_process_privilege(name: windows_sys::core::PCWSTR) -> io::Result<TokenPrivilegeGuard> {
+    use windows_sys::Win32::Foundation::{
+        ERROR_NOT_ALL_ASSIGNED, GetLastError, LUID, SetLastError,
+    };
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = ptr::null_mut();
+    let opened = unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+    };
+    if opened == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut luid = LUID::default();
+    let looked_up = unsafe { LookupPrivilegeValueW(ptr::null(), name, &mut luid) };
+    if looked_up == 0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(token);
+        }
+        return Err(error);
+    }
+    let requested = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+    let mut previous = TOKEN_PRIVILEGES::default();
+    let mut previous_length = 0u32;
+    unsafe {
+        SetLastError(0);
+    }
+    let adjusted = unsafe {
+        AdjustTokenPrivileges(
+            token,
+            0,
+            &requested,
+            std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+            &mut previous,
+            &mut previous_length,
+        )
+    };
+    let last_error = unsafe { GetLastError() };
+    if adjusted == 0 || last_error == ERROR_NOT_ALL_ASSIGNED {
+        let error = if last_error == 0 {
+            io::Error::last_os_error()
+        } else {
+            io::Error::from_raw_os_error(last_error as i32)
+        };
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(token);
+        }
+        return Err(error);
+    }
+    Ok(TokenPrivilegeGuard { token, previous })
+}
+
+impl Drop for TokenPrivilegeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Security::AdjustTokenPrivileges(
+                self.token,
+                0,
+                &self.previous,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            );
+            windows_sys::Win32::Foundation::CloseHandle(self.token);
+        }
     }
 }
 

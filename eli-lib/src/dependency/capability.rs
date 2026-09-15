@@ -60,7 +60,7 @@ fn oem_manufacturer_is_edgeless() -> io::Result<bool> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
 
     let key_path = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OEMInformation"
@@ -82,12 +82,13 @@ fn oem_manufacturer_is_edgeless() -> io::Result<bool> {
             .chain(Some(0))
             .collect::<Vec<_>>();
         let mut length = 0u32;
+        let mut value_type = 0u32;
         let query_status = unsafe {
             RegQueryValueExW(
                 key,
                 name.as_ptr(),
                 std::ptr::null(),
-                std::ptr::null_mut(),
+                &mut value_type,
                 std::ptr::null_mut(),
                 &mut length,
             )
@@ -98,13 +99,16 @@ fn oem_manufacturer_is_edgeless() -> io::Result<bool> {
         if query_status != windows_sys::Win32::Foundation::ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(query_status as i32));
         }
+        if value_type != REG_SZ || length == 0 || !length.is_multiple_of(2) {
+            return Ok(false);
+        }
         let mut wide = vec![0u16; (length as usize) / 2];
         let query_status = unsafe {
             RegQueryValueExW(
                 key,
                 name.as_ptr(),
                 std::ptr::null(),
-                std::ptr::null_mut(),
+                &mut value_type,
                 wide.as_mut_ptr() as *mut u8,
                 &mut length,
             )
@@ -112,13 +116,17 @@ fn oem_manufacturer_is_edgeless() -> io::Result<bool> {
         if query_status != windows_sys::Win32::Foundation::ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(query_status as i32));
         }
+        if value_type != REG_SZ || !length.is_multiple_of(2) {
+            return Ok(false);
+        }
+        wide.truncate((length as usize) / 2);
         if let Some(last) = wide.last()
             && *last == 0
         {
             wide.pop();
         }
         let value = OsString::from_wide(&wide);
-        Ok(value.to_string_lossy().eq_ignore_ascii_case("Edgeless"))
+        Ok(value == "Edgeless")
     })();
     unsafe {
         RegCloseKey(key);
@@ -158,19 +166,18 @@ fn system_control_panel_has_edgeless() -> io::Result<bool> {
 
 #[cfg(windows)]
 fn contains_edgeless_text(contents: &[u8]) -> bool {
-    if contents.windows(8).any(|window| window == b"Edgeless") {
+    if contents
+        .windows(8)
+        .any(|window| window.eq_ignore_ascii_case(b"Edgeless"))
+    {
         return true;
     }
-    let utf16 = b"Edgeless"
-        .chunks_exact(1)
-        .fold(Vec::new(), |mut bytes, byte| {
-            bytes.push(byte[0]);
-            bytes.push(0);
-            bytes
-        });
-    contents
-        .windows(16)
-        .any(|window| window == utf16.as_slice())
+    contents.windows(16).any(|window| {
+        window
+            .chunks_exact(2)
+            .zip(b"Edgeless")
+            .all(|(unit, expected)| unit[1] == 0 && unit[0].eq_ignore_ascii_case(expected))
+    })
 }
 
 #[cfg(test)]
@@ -189,8 +196,12 @@ mod tests {
     #[test]
     fn finds_edgeless_in_ascii_and_utf16_binary_text() {
         assert!(contains_edgeless_text(b"prefix Edgeless suffix"));
+        assert!(contains_edgeless_text(b"prefix eDgElEsS suffix"));
         assert!(contains_edgeless_text(&[
             b'E', 0, b'd', 0, b'g', 0, b'e', 0, b'l', 0, b'e', 0, b's', 0, b's', 0,
+        ]));
+        assert!(contains_edgeless_text(&[
+            b'e', 0, b'D', 0, b'G', 0, b'e', 0, b'L', 0, b'E', 0, b's', 0, b'S', 0,
         ]));
         assert!(!contains_edgeless_text(b"Edgelesx"));
         assert!(!contains_edgeless_text(b""));

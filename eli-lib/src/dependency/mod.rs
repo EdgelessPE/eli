@@ -82,6 +82,11 @@ impl DependencyManager {
 
     #[cfg(feature = "theme-apply")]
     pub fn require_capability(&self, required: RuntimeCapability) -> io::Result<()> {
+        match required {
+            RuntimeCapability::EdgelessRuntime => {
+                self.require_environment(RuntimeEnvironment::WindowsPE)?;
+            }
+        }
         capability::check(required).map_err(|error| {
             io::Error::new(
                 error.kind(),

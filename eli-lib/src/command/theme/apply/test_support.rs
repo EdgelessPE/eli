@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::archive::ArchiveEntry;
-use super::{CursorSnapshot, ThemeBackend, ThemePaths};
+use super::{CursorSnapshot, RegistryValueSnapshot, ThemeBackend, ThemePaths};
 
 /// 一个可被 fake 后端“打开”的归档：列出条目并按白名单在目标目录中物化文件。
 #[derive(Debug, Clone)]
@@ -32,8 +32,11 @@ pub struct FakeState {
     pub link_modify_failures: Vec<PathBuf>,
     /// 模拟的 HKCU\Control Panel\Cursors 槽位。
     pub cursor_slots: [Option<String>; 17],
+    pub cursor_slot_types: [Option<u32>; 17],
     pub cursor_default: Option<String>,
+    pub cursor_default_type: Option<u32>,
     pub cursor_schemes: HashMap<String, String>,
+    pub cursor_scheme_types: HashMap<String, u32>,
     pub cursor_dirs: Vec<PathBuf>,
     pub spi_calls: usize,
     pub shell_running: bool,
@@ -283,9 +286,25 @@ impl ThemeBackend for FakeBackend {
             return Err(io::Error::other("fake cursor snapshot failure"));
         }
         Ok(CursorSnapshot {
-            slots: state.cursor_slots.clone(),
-            default_scheme: state.cursor_default.clone(),
-            target_scheme: state.cursor_schemes.get(target_scheme).cloned(),
+            slots: std::array::from_fn(|slot| {
+                state.cursor_slots[slot].as_ref().map(|value| {
+                    fake_registry_snapshot(value, state.cursor_slot_types[slot].unwrap_or(2))
+                })
+            }),
+            default_scheme: state
+                .cursor_default
+                .as_ref()
+                .map(|value| fake_registry_snapshot(value, state.cursor_default_type.unwrap_or(1))),
+            target_scheme: state.cursor_schemes.get(target_scheme).map(|value| {
+                fake_registry_snapshot(
+                    value,
+                    state
+                        .cursor_scheme_types
+                        .get(target_scheme)
+                        .copied()
+                        .unwrap_or(1),
+                )
+            }),
             scheme_name: target_scheme.to_owned(),
         })
     }
@@ -299,6 +318,7 @@ impl ThemeBackend for FakeBackend {
         for (slot, value) in values.iter().enumerate() {
             if let Some(value) = value {
                 state.cursor_slots[slot] = Some(value.clone());
+                state.cursor_slot_types[slot] = Some(2);
             }
         }
         Ok(())
@@ -313,6 +333,7 @@ impl ThemeBackend for FakeBackend {
         state
             .cursor_schemes
             .insert(name.to_owned(), join_scheme_fields(values));
+        state.cursor_scheme_types.insert(name.to_owned(), 1);
         Ok(())
     }
 
@@ -323,22 +344,34 @@ impl ThemeBackend for FakeBackend {
             return Err(io::Error::other("fake cursor default write failure"));
         }
         state.cursor_default = Some(name.to_owned());
+        state.cursor_default_type = Some(1);
         Ok(())
     }
 
     fn restore_cursors(&self, snapshot: &CursorSnapshot) -> io::Result<()> {
         self.commit_span("restore_cursors", || ());
         let mut state = self.state.lock().unwrap();
-        state.cursor_slots = snapshot.slots.clone();
-        state.cursor_default = snapshot.default_scheme.clone();
+        for (slot, value) in snapshot.slots.iter().enumerate() {
+            state.cursor_slots[slot] = value.as_ref().map(fake_registry_string);
+            state.cursor_slot_types[slot] = value.as_ref().map(|value| value.value_type);
+        }
+        state.cursor_default = snapshot.default_scheme.as_ref().map(fake_registry_string);
+        state.cursor_default_type = snapshot
+            .default_scheme
+            .as_ref()
+            .map(|value| value.value_type);
         match &snapshot.target_scheme {
             Some(value) => {
                 state
                     .cursor_schemes
-                    .insert(snapshot.scheme_name.clone(), value.clone());
+                    .insert(snapshot.scheme_name.clone(), fake_registry_string(value));
+                state
+                    .cursor_scheme_types
+                    .insert(snapshot.scheme_name.clone(), value.value_type);
             }
             None => {
                 state.cursor_schemes.remove(&snapshot.scheme_name);
+                state.cursor_scheme_types.remove(&snapshot.scheme_name);
             }
         }
         Ok(())
@@ -376,23 +409,29 @@ impl ThemeBackend for FakeBackend {
         }
     }
 
-    fn modify_shortcut_icon(&self, link: &Path, icon: &Path) -> io::Result<()> {
-        self.commit_span("modify_shortcut_icon", || ());
-        let mut state = self.state.lock().unwrap();
-        if state
-            .link_modify_failures
+    fn modify_shortcut_icons(
+        &self,
+        changes: &[(PathBuf, PathBuf)],
+    ) -> io::Result<Vec<io::Result<()>>> {
+        Ok(changes
             .iter()
-            .any(|failure| failure == link)
-        {
-            return Err(io::Error::other(format!(
-                "simulated link modification failure: {}",
-                link.display()
-            )));
-        }
-        state
-            .modified_links
-            .push((link.to_owned(), icon.to_owned()));
-        Ok(())
+            .map(|(link, icon)| {
+                self.commit_span("modify_shortcut_icon", || ());
+                let mut state = self.state.lock().unwrap();
+                if state
+                    .link_modify_failures
+                    .iter()
+                    .any(|failure| failure == link)
+                {
+                    return Err(io::Error::other(format!(
+                        "simulated link modification failure: {}",
+                        link.display()
+                    )));
+                }
+                state.modified_links.push((link.clone(), icon.clone()));
+                Ok(())
+            })
+            .collect())
     }
 
     fn notify_shortcuts(&self, _links: &[PathBuf]) -> io::Result<()> {
@@ -445,6 +484,27 @@ impl ThemeBackend for FakeBackend {
             .push(file.to_owned());
         operation()
     }
+}
+
+fn fake_registry_snapshot(value: &str, value_type: u32) -> RegistryValueSnapshot {
+    let data = value
+        .encode_utf16()
+        .chain(Some(0))
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    RegistryValueSnapshot { value_type, data }
+}
+
+fn fake_registry_string(value: &RegistryValueSnapshot) -> String {
+    let mut units = value
+        .data
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    if units.last() == Some(&0) {
+        units.pop();
+    }
+    String::from_utf16_lossy(&units)
 }
 
 pub fn join_scheme_fields(values: &[Option<String>; 17]) -> String {

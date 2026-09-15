@@ -97,11 +97,11 @@ impl RefreshPlan {
             if let Some(commit) = &self.ess {
                 match on_ess(commit) {
                     Ok(()) => {
-                        executed.icon_cache_invalidated = true;
-                        if self.icon_cache_invalidate
-                            && let Err(error) = clear_icon_db_cache(paths)
-                        {
-                            executed.warnings.push(error.to_string());
+                        if self.icon_cache_invalidate {
+                            match clear_icon_db_cache(paths) {
+                                Ok(()) => executed.icon_cache_invalidated = true,
+                                Err(error) => executed.warnings.push(error.to_string()),
+                            }
                         }
                     }
                     Err(error) => {
@@ -111,10 +111,11 @@ impl RefreshPlan {
                             .push(format!("ESS replacement failed: {error}"));
                     }
                 }
-            } else if self.icon_cache_invalidate
-                && let Err(error) = clear_icon_db_cache(paths)
-            {
-                executed.warnings.push(error.to_string());
+            } else if self.icon_cache_invalidate {
+                match clear_icon_db_cache(paths) {
+                    Ok(()) => executed.icon_cache_invalidated = true,
+                    Err(error) => executed.warnings.push(error.to_string()),
+                }
             }
 
             if shell_was_running {
@@ -164,6 +165,7 @@ impl RefreshPlan {
 
 /// 在精确图标缓存目录第一层删除普通 `*.db` 文件；不得递归、不得越界。
 fn clear_icon_db_cache(paths: &ThemePaths) -> io::Result<()> {
+    super::transaction::ensure_existing_directory_not_reparse(&paths.icon_cache_dir)?;
     let entries = match std::fs::read_dir(&paths.icon_cache_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),

@@ -140,6 +140,21 @@ if errorlevel 1 (
     echo Minimal ESC did not restart Explorer exactly once. 1>&2
     set "RESULT=1"
 )
+set "THEME_LOG=%SystemDrive%\Users\Theme\eli\theme-apply.log"
+if not exist "%THEME_LOG%" (
+    echo Theme apply event log was not created. 1>&2
+    set "RESULT=1"
+) else (
+    set "LOG_RESULT=0"
+    findstr /c:"component=StartIsBackConfig.esc" "%THEME_LOG%" >nul || set "LOG_RESULT=1"
+    findstr /c:"phase=commit" "%THEME_LOG%" >nul || set "LOG_RESULT=1"
+    findstr /c:"result=applied" "%THEME_LOG%" >nul || set "LOG_RESULT=1"
+    findstr /c:"windows_error_code=" "%THEME_LOG%" >nul || set "LOG_RESULT=1"
+    if "!LOG_RESULT!"=="1" (
+        echo Theme apply event log is missing required event fields. 1>&2
+        set "RESULT=1"
+    )
+)
 
 rem 未知扩展名在任何副作用前拒绝。
 > "%TEST_ROOT%\unknown.txt" echo nonsense

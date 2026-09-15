@@ -70,14 +70,24 @@ fn check_encoding_integrity(contents: &[u8]) -> Result<(), String> {
             if !body.is_multiple_of(2) || body == 0 {
                 return Err("UTF-16 BOM 后内容长度不是偶数或为空".to_owned());
             }
+            let little_endian = prefix == [0xFF, 0xFE];
+            let units = contents[2..].chunks_exact(2).map(|pair| {
+                if little_endian {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            });
+            if std::char::decode_utf16(units).any(|character| character.is_err()) {
+                return Err("UTF-16 正文包含不完整的代理项".to_owned());
+            }
             Ok(())
         }
         [0xEF, 0xBB] if contents.get(2) == Some(&0xBF) => {
             let remainder = &contents[3..];
-            if remainder.iter().take(3).all(|byte| *byte == 0) {
-                return Err("UTF-8 BOM 为头但内容疑似截断".to_owned());
-            }
-            Ok(())
+            std::str::from_utf8(remainder)
+                .map(|_| ())
+                .map_err(|error| format!("UTF-8 BOM 后正文无效或截断：{error}"))
         }
         _ => Ok(()),
     }
@@ -147,6 +157,14 @@ mod tests {
         assert!(check_encoding_integrity(&truncated).is_err());
         // 只有 BOM 没有正文。
         assert!(check_encoding_integrity(&[0xFE, 0xFF]).is_err());
+        let unpaired_surrogate = [0xFF, 0xFE, 0x00, 0xD8];
+        assert!(check_encoding_integrity(&unpaired_surrogate).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_utf8_after_a_bom() {
+        assert!(check_encoding_integrity(&[0xEF, 0xBB, 0xBF, 0xE2, 0x82]).is_err());
+        assert!(check_encoding_integrity(&[0xEF, 0xBB, 0xBF, b'E', b'X', b'I', b'T']).is_ok());
     }
 
     #[test]

@@ -296,7 +296,18 @@ fn finish_ems_rollback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::theme::apply::details::archive::ArchiveEntry;
     use crate::command::theme::apply::test_support::FakeBackend;
+
+    fn archive_entry(path: &str) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_owned(),
+            size: 1,
+            is_directory: false,
+            encrypted: false,
+            is_link: false,
+        }
+    }
 
     fn paths_at(root: &Path) -> ThemePaths {
         ThemePaths {
@@ -362,6 +373,46 @@ mod tests {
         assert_eq!(
             OPTIONAL_SLOTS,
             [("aero_pin", "Pin"), ("aero_person", "Person")]
+        );
+    }
+
+    #[test]
+    fn selects_ani_before_cur_and_reports_the_ignored_variant() {
+        let entries = [
+            archive_entry("AERO_ARROW.CUR"),
+            archive_entry("aero_arrow.ani"),
+        ];
+        let mut warnings = Vec::new();
+        let mut recognized = Vec::new();
+
+        let selected = select_cursor(
+            &entries,
+            "aero_arrow",
+            1,
+            false,
+            &mut warnings,
+            &mut recognized,
+        )
+        .unwrap();
+
+        assert_eq!(selected.as_deref(), Some("aero_arrow.ani"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("AERO_ARROW.CUR"));
+        assert_eq!(recognized.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_missing_required_cursor_but_allows_a_missing_optional_cursor() {
+        let mut warnings = Vec::new();
+        let mut recognized = Vec::new();
+
+        let error =
+            select_cursor(&[], "aero_arrow", 1, false, &mut warnings, &mut recognized).unwrap_err();
+        assert!(error.to_string().contains("missing a required cursor"));
+        assert!(
+            select_cursor(&[], "aero_pin", 16, true, &mut warnings, &mut recognized,)
+                .unwrap()
+                .is_none()
         );
     }
 
@@ -530,7 +581,9 @@ mod tests {
         {
             let mut state = backend.state.lock().unwrap();
             state.cursor_slots[0] = Some("old-arrow.cur".to_owned());
+            state.cursor_slot_types[0] = Some(1);
             state.cursor_default = Some("old-scheme".to_owned());
+            state.cursor_default_type = Some(2);
             state.fail_spi = true;
         }
 
@@ -539,7 +592,9 @@ mod tests {
         assert!(error.to_string().contains("SPI_SETCURSORS"));
         let state = backend.state.lock().unwrap();
         assert_eq!(state.cursor_slots[0].as_deref(), Some("old-arrow.cur"));
+        assert_eq!(state.cursor_slot_types[0], Some(1));
         assert_eq!(state.cursor_default.as_deref(), Some("old-scheme"));
+        assert_eq!(state.cursor_default_type, Some(2));
         assert!(state.cursor_schemes.is_empty());
         assert_eq!(state.spi_calls, 2);
         assert_eq!(state.cursor_dirs.len(), 1);
