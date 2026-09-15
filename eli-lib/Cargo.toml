@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["loadscreen-bake"]
+default = ["loadscreen-bake", "theme-apply"]
 loadscreen-bake = ["dep:image", "dep:tar", "dep:webp"]
+theme-apply = ["dep:image"]
 
 [dependencies]
 fs2 = "0.4"
@@ -48,9 +49,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

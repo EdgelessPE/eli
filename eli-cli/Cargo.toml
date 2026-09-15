@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["loadscreen-bake"]
+default = ["loadscreen-bake", "theme-apply"]
 loadscreen-bake = ["dep:indicatif", "eli-lib/loadscreen-bake"]
+theme-apply = ["eli-lib/theme-apply"]
 
 [[bin]]
 name = "eli"

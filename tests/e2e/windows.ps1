@@ -668,6 +668,50 @@ try {
     if (Test-Path -LiteralPath (Join-Path $driveRoots[1] 'Edgeless\Resource\搜狗拼音_16.4.0.0_Cno（bot）.7z')) {
         throw 'Plugin deletion by stem did not remove the package.'
     }
+
+    # -----------------------------------------------------------------------
+    # eli theme apply：WindowsNormal 环境拒绝 + 输入校验（无副作用顺序）
+    # -----------------------------------------------------------------------
+
+    Set-Content -NoNewline -LiteralPath (Join-Path $resolvedTestRoot 'theme.eth') -Value 'theme'
+    & $eli theme apply (Join-Path $resolvedTestRoot 'theme.eth') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Theme apply unexpectedly accepted WindowsNormal.'
+    }
+    $themeEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($themeEnvironmentError.Contains('WindowsPE') -and
+            $themeEnvironmentError.Contains('WindowsNormal'))) {
+        throw "Theme apply did not report its environment dependency: '$themeEnvironmentError'."
+    }
+
+    Set-Content -NoNewline -LiteralPath (Join-Path $resolvedTestRoot 'loadscreen.els') -Value 'els'
+    & $eli theme apply (Join-Path $resolvedTestRoot 'loadscreen.els') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'ELS theme input unexpectedly accepted WindowsNormal.'
+    }
+    $elsThemeEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($elsThemeEnvironmentError.Contains('WindowsPE') -and
+            $elsThemeEnvironmentError.Contains('WindowsNormal'))) {
+        throw "ELS theme input did not report its environment dependency: '$elsThemeEnvironmentError'."
+    }
+
+    Set-Content -NoNewline -LiteralPath (Join-Path $resolvedTestRoot 'unknown.txt') -Value 'unknown'
+    & $eli theme apply (Join-Path $resolvedTestRoot 'unknown.txt') `
+        1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('unsupported theme package extension')) {
+        throw 'Theme apply did not reject an unsupported extension before side effects.'
+    }
+
+    $themeDirectory = Join-Path $resolvedTestRoot 'theme-dir.eth'
+    New-Item -ItemType Directory -Path $themeDirectory | Out-Null
+    & $eli theme apply $themeDirectory 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('not a regular file')) {
+        throw 'Theme apply did not reject a directory input before side effects.'
+    }
 }
 finally {
     Pop-Location

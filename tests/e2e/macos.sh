@@ -422,3 +422,36 @@ grep -Fq -- '--bootdisk' "$stderr_path"
 "$eli" plugin delete '搜狗拼音_16.4.0.0_Cno（bot）' --bootdisk "$mount_z" > "$stdout_path" 2> "$stderr_path"
 [[ ! -e "$mount_z/Edgeless/Resource/搜狗拼音_16.4.0.0_Cno（bot）.7z" ]]
 [[ ! -s "$stderr_path" ]]
+
+# ---------------------------------------------------------------------------
+# eli theme apply：非 WindowsPE 环境拒绝 + 输入校验（无副作用顺序）
+# ---------------------------------------------------------------------------
+
+printf '%s' 'theme' > "$test_root/theme.eth"
+if "$eli" theme apply "$test_root/theme.eth" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme apply unexpectedly accepted this OS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'MacOS' "$stderr_path"
+
+printf '%s' 'els' > "$test_root/loadscreen.els"
+if "$eli" theme apply "$test_root/loadscreen.els" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'ELS input unexpectedly accepted this OS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+
+printf '%s' 'unknown' > "$test_root/unknown.txt"
+if "$eli" theme apply "$test_root/unknown.txt" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme apply unexpectedly accepted an unsupported extension.' >&2
+    exit 1
+fi
+grep -Fq 'unsupported theme package extension' "$stderr_path"
+
+mkdir -p "$test_root/theme-dir.eth"
+if "$eli" theme apply "$test_root/theme-dir.eth" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme apply unexpectedly accepted a directory.' >&2
+    exit 1
+fi
+grep -Fq 'not a regular file' "$stderr_path"

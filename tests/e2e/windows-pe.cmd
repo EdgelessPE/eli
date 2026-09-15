@@ -62,6 +62,100 @@ if errorlevel 1 (
     set "RESULT=1"
 )
 
+rem ---------------------------------------------------------------------------
+rem eli theme apply：仅 Windows PE 实机（构造最小包验证跳过/告警/ESC 应用）
+rem ---------------------------------------------------------------------------
+
+set "THEME_DIR=%TEST_ROOT%\theme"
+md "%THEME_DIR%" || exit /b 1
+
+rem 独立 ELS：识别、告警、跳过，不解析 7-Zip。
+> "%THEME_DIR%\LoadScreen.els" echo legacy-loadscreen
+"%ELI%" theme apply "%THEME_DIR%\LoadScreen.els" >"%STDOUT%" 2>"%STDERR%"
+if not "%ERRORLEVEL%"=="0" (
+    echo Standalone ELS theme apply should succeed. 1>&2
+    set "RESULT=1"
+    goto theme_done
+)
+findstr /c:"Skipped LoadScreen.els" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo Standalone ELS was not reported as skipped. 1>&2
+    set "RESULT=1"
+)
+findstr /c:"legacy LoadScreen.els" "%STDERR%" >nul
+if errorlevel 1 (
+    echo Standalone ELS migration warning is missing. 1>&2
+    set "RESULT=1"
+)
+
+rem 最小 .eth（仅 LoadScreen.els）：0 Applied / 1 Skipped。
+set "SEVENZIP="
+for /f "delims=" %%i in ('where 7z.exe 2^>nul') do if not defined SEVENZIP set "SEVENZIP=%%i"
+if not defined SEVENZIP (
+    echo 7z.exe is unavailable in the PE test environment. 1>&2
+    set "RESULT=1"
+    goto theme_done
+)
+pushd "%THEME_DIR%"
+"%SEVENZIP%" a "%TEST_ROOT%\loadscreen-only.eth" LoadScreen.els >nul 2>nul
+if errorlevel 1 (
+    echo Failed to build the ELS-only eth package. 1>&2
+    set "RESULT=1"
+    popd
+    goto theme_done
+)
+popd
+"%ELI%" theme apply "%TEST_ROOT%\loadscreen-only.eth" >"%STDOUT%" 2>"%STDERR%"
+if not "%ERRORLEVEL%"=="0" (
+    echo ELS-only eth theme apply should succeed. 1>&2
+    set "RESULT=1"
+    goto theme_done
+)
+findstr /x /c:"0 applied, 0 applied with warnings, 1 skipped, 0 failed" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo ELS-only eth summary is incorrect. 1>&2
+    set "RESULT=1"
+)
+findstr /c:"legacy LoadScreen.els" "%STDERR%" >nul
+if errorlevel 1 (
+    echo ELS-only eth migration warning is missing. 1>&2
+    set "RESULT=1"
+)
+
+rem 最小 ESC：PECMD LOAD 应成功，并触发一次 Explorer 重启。
+> "%THEME_DIR%\minimal.esc" echo EXIT
+"%ELI%" theme apply "%THEME_DIR%\minimal.esc" >"%STDOUT%" 2>"%STDERR%"
+if not "%ERRORLEVEL%"=="0" (
+    echo Minimal ESC theme apply should succeed. 1>&2
+    set "RESULT=1"
+    goto theme_done
+)
+findstr /c:"Applied StartIsBackConfig.esc" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo Minimal ESC was not applied. 1>&2
+    set "RESULT=1"
+)
+findstr /c:"explorer restarted" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo Minimal ESC did not restart Explorer exactly once. 1>&2
+    set "RESULT=1"
+)
+
+rem 未知扩展名在任何副作用前拒绝。
+> "%TEST_ROOT%\unknown.txt" echo nonsense
+"%ELI%" theme apply "%TEST_ROOT%\unknown.txt" >"%STDOUT%" 2>"%STDERR%"
+if "%ERRORLEVEL%"=="0" (
+    echo Unknown theme extension should fail. 1>&2
+    set "RESULT=1"
+)
+findstr /c:"unsupported theme package extension" "%STDERR%" >nul
+if errorlevel 1 (
+    echo Unknown theme extension was not rejected. 1>&2
+    set "RESULT=1"
+)
+
+:theme_done
+
 :cleanup
 rd /s /q "%TEST_ROOT%" 2>nul
 exit /b %RESULT%

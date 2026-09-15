@@ -1,6 +1,10 @@
+#[cfg(feature = "theme-apply")]
+mod capability;
 mod environment;
 mod program;
 
+#[cfg(feature = "theme-apply")]
+pub use capability::RuntimeCapability;
 pub use environment::RuntimeEnvironment;
 pub use program::{ProgramDependency, ResolvedPrograms};
 
@@ -74,6 +78,16 @@ impl DependencyManager {
             io::ErrorKind::Unsupported,
             format!("command requires the {required} environment, current environment is {actual}"),
         ))
+    }
+
+    #[cfg(feature = "theme-apply")]
+    pub fn require_capability(&self, required: RuntimeCapability) -> io::Result<()> {
+        capability::check(required).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("command requires the {required} capability: {error}"),
+            )
+        })
     }
 
     pub fn require_programs(&self, required: &[ProgramDependency]) -> io::Result<ResolvedPrograms> {

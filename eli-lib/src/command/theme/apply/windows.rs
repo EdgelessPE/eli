@@ -1,0 +1,1386 @@
+// Windows 平台后端：承载 theme apply 的真实 Win32 副作用。
+//
+// 7-Zip/PECMD 通过依赖管理模块从 PATH 解析并探测；注册表写入逐次检查返回值并
+// 关闭句柄；光标刷新使用 SPI_SETCURSORS；Explorer 生命周期只操作当前会话、
+// 当前用户拥有的窗口进程；ESS 的 ACL 提升只在 AccessDenied 时临时进行并最终恢复。
+// 非 Windows 平台保留统一接口，由环境检查阶段返回明确的 WindowsPE 不支持错误。
+
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::ptr;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use crate::Ctx;
+use crate::dependency::ProgramDependency;
+
+use super::archive::{ArchiveEntry, parse_listing};
+use super::ems::{BASE_SLOTS, OPTIONAL_SLOTS, scheme_field_string};
+use super::transaction::publish_directory_atomically;
+use super::{CursorSnapshot, ThemeBackend, ThemePaths};
+
+/// 主题提交全局 mutex（本地会话）。等待采用有界超时；超时返回 WouldBlock。
+const THEME_APPLY_MUTEX_NAME: &str = "Local\\Edgeless.Eli.ThemeApply";
+const THEME_APPLY_WAIT_MILLIS: u32 = 60_000;
+const SHELL_WAIT_MILLIS: u32 = 60_000;
+
+pub struct WindowsThemeBackend<'a> {
+    ctx: &'a Ctx,
+    paths: OnceLock<ThemePaths>,
+}
+
+impl<'a> WindowsThemeBackend<'a> {
+    pub fn new(ctx: &'a Ctx) -> io::Result<Self> {
+        Ok(Self {
+            ctx,
+            paths: OnceLock::new(),
+        })
+    }
+
+    fn paths(&self) -> io::Result<&ThemePaths> {
+        if let Some(paths) = self.paths.get() {
+            return Ok(paths);
+        }
+        let paths = resolve_theme_paths()?;
+        let _ = self.paths.set(paths);
+        Ok(self
+            .paths
+            .get()
+            .expect("theme paths were initialized by this backend"))
+    }
+
+    fn seven_zip(&self) -> io::Result<PathBuf> {
+        let programs = self
+            .ctx
+            .dependencies()
+            .require_programs(&[ProgramDependency::SevenZip])?;
+        programs
+            .executable(ProgramDependency::SevenZip)
+            .map(Path::to_owned)
+    }
+
+    fn pecmd(&self) -> io::Result<PathBuf> {
+        let programs = self
+            .ctx
+            .dependencies()
+            .require_programs(&[ProgramDependency::Pecmd])?;
+        programs
+            .executable(ProgramDependency::Pecmd)
+            .map(Path::to_owned)
+    }
+}
+
+impl ThemeBackend for WindowsThemeBackend<'_> {
+    fn theme_paths(&self) -> io::Result<ThemePaths> {
+        Ok(self.paths()?.clone())
+    }
+
+    fn require_seven_zip(&self) -> io::Result<()> {
+        self.seven_zip().map(|_| ())
+    }
+
+    fn require_pecmd(&self) -> io::Result<()> {
+        self.pecmd().map(|_| ())
+    }
+
+    fn verify_shell_context(&self) -> io::Result<()> {
+        verify_shell_context_impl()
+    }
+
+    fn list_archive(&self, source: &Path) -> io::Result<Vec<ArchiveEntry>> {
+        let arguments = vec![
+            OsString::from("l"),
+            OsString::from("-slt"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("--"),
+            OsString::from(source),
+        ];
+        let output = run_process(
+            &self.seven_zip()?,
+            &arguments,
+            source,
+            Duration::from_secs(60),
+        )?;
+        parse_listing(&output)
+    }
+
+    fn extract_archive_entries(
+        &self,
+        source: &Path,
+        destination: &Path,
+        entries: &[String],
+    ) -> io::Result<()> {
+        let mut arguments = vec![
+            OsString::from("x"),
+            OsString::from("-y"),
+            OsString::from("-aos"),
+            OsString::from("-bd"),
+            OsString::from("-bb0"),
+            OsString::from("-spd"),
+        ];
+        let mut output = OsString::from("-o");
+        output.push(destination);
+        arguments.push(output);
+        arguments.push(OsString::from("--"));
+        arguments.push(OsString::from(source));
+        for entry in entries {
+            arguments.push(OsString::from(entry));
+        }
+        run_process(
+            &self.seven_zip()?,
+            &arguments,
+            source,
+            Duration::from_secs(300),
+        )
+        .map(|_| ())
+    }
+
+    fn decode_jpeg(&self, bytes: &[u8]) -> io::Result<()> {
+        decode_image(bytes, Some(image::ImageFormat::Jpeg))
+    }
+
+    fn decode_icon(&self, bytes: &[u8]) -> io::Result<()> {
+        decode_image(bytes, Some(image::ImageFormat::Ico))
+    }
+
+    fn decode_plain_image(&self, bytes: &[u8]) -> io::Result<()> {
+        decode_image(bytes, None)
+    }
+
+    fn validate_cursor_file(&self, path: &Path) -> io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyCursor, LoadCursorFromFileW};
+
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let handle = unsafe { LoadCursorFromFileW(wide.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        unsafe {
+            DestroyCursor(handle);
+        }
+        Ok(())
+    }
+
+    fn apply_wallpaper(&self, image: &Path) -> io::Result<()> {
+        run_process_checked(
+            &self.pecmd()?,
+            &[OsString::from("WALL"), OsString::from(image)],
+            &system_work_directory(),
+            Duration::from_secs(60),
+        )
+    }
+
+    fn execute_esc(&self, script: &Path) -> io::Result<()> {
+        run_process_checked(
+            &self.pecmd()?,
+            &[OsString::from("LOAD"), OsString::from(script)],
+            &system_work_directory(),
+            Duration::from_secs(60),
+        )
+    }
+
+    fn snapshot_cursors(&self, target_scheme: &str) -> io::Result<CursorSnapshot> {
+        let mut slots = std::array::from_fn(|_| None);
+        let cursors_key = open_cursors_key(false)?;
+        let slots_result: io::Result<()> = (|| {
+            let names = BASE_SLOTS
+                .iter()
+                .chain(OPTIONAL_SLOTS.iter())
+                .map(|(_, registry_name)| *registry_name);
+            for (slot, registry_name) in names.enumerate() {
+                slots[slot] = read_registry_wide(cursors_key, registry_name)?;
+            }
+            Ok(())
+        })();
+        unsafe {
+            windows_sys::Win32::System::Registry::RegCloseKey(cursors_key);
+        }
+        slots_result?;
+        let schemes_key = open_schemes_key(false)?;
+        let scheme_value = read_registry_wide(schemes_key, target_scheme);
+        unsafe {
+            windows_sys::Win32::System::Registry::RegCloseKey(schemes_key);
+        }
+        let default_scheme = read_cursors_default()?;
+        Ok(CursorSnapshot {
+            slots,
+            default_scheme,
+            target_scheme: scheme_value?,
+            scheme_name: target_scheme.to_owned(),
+        })
+    }
+
+    fn write_cursor_slots(&self, values: &[Option<String>; 17]) -> io::Result<()> {
+        let key = open_cursors_key(true)?;
+        let result = (|| {
+            let names = BASE_SLOTS
+                .iter()
+                .chain(OPTIONAL_SLOTS.iter())
+                .map(|(_, registry_name)| *registry_name);
+            for (slot, registry_name) in names.enumerate() {
+                if let Some(value) = &values[slot] {
+                    set_registry_wide(key, registry_name, value, REG_EXPAND_SZ)?;
+                }
+            }
+            Ok(())
+        })();
+        unsafe {
+            windows_sys::Win32::System::Registry::RegCloseKey(key);
+        }
+        result
+    }
+
+    fn write_cursor_scheme(&self, name: &str, values: &[Option<String>; 17]) -> io::Result<()> {
+        let key = open_schemes_key(true)?;
+        let result = set_registry_wide(key, name, &scheme_field_string(values), REG_SZ);
+        unsafe {
+            windows_sys::Win32::System::Registry::RegCloseKey(key);
+        }
+        result
+    }
+
+    fn write_cursor_default_scheme(&self, name: &str) -> io::Result<()> {
+        let key = open_cursors_key(true)?;
+        let result = set_registry_wide(key, "", name, REG_SZ);
+        unsafe {
+            windows_sys::Win32::System::Registry::RegCloseKey(key);
+        }
+        result
+    }
+
+    fn restore_cursors(&self, snapshot: &CursorSnapshot) -> io::Result<()> {
+        let mut failures = Vec::new();
+        match open_cursors_key(true) {
+            Ok(key) => {
+                let names = BASE_SLOTS
+                    .iter()
+                    .chain(OPTIONAL_SLOTS.iter())
+                    .map(|(_, registry_name)| *registry_name);
+                for (slot, registry_name) in names.enumerate() {
+                    let result = match &snapshot.slots[slot] {
+                        Some(value) => set_registry_wide(key, registry_name, value, REG_EXPAND_SZ),
+                        None => delete_registry_wide(key, registry_name),
+                    };
+                    if let Err(error) = result {
+                        failures.push(format!("restore cursor value {registry_name}: {error}"));
+                    }
+                }
+                let default_result = match &snapshot.default_scheme {
+                    Some(value) => set_registry_wide(key, "", value, REG_SZ),
+                    None => delete_registry_wide(key, ""),
+                };
+                if let Err(error) = default_result {
+                    failures.push(format!("restore the active cursor scheme: {error}"));
+                }
+                unsafe {
+                    windows_sys::Win32::System::Registry::RegCloseKey(key);
+                }
+            }
+            Err(error) => failures.push(format!("open the cursor registry key: {error}")),
+        }
+
+        match open_schemes_key(true) {
+            Ok(key) => {
+                let result = match &snapshot.target_scheme {
+                    Some(value) => set_registry_wide(key, &snapshot.scheme_name, value, REG_SZ),
+                    None => delete_registry_wide(key, &snapshot.scheme_name),
+                };
+                if let Err(error) = result {
+                    failures.push(format!(
+                        "restore cursor scheme {}: {error}",
+                        snapshot.scheme_name
+                    ));
+                }
+                unsafe {
+                    windows_sys::Win32::System::Registry::RegCloseKey(key);
+                }
+            }
+            Err(error) => failures.push(format!("open the cursor schemes registry key: {error}")),
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(failures.join("; ")))
+        }
+    }
+
+    fn publish_cursor_directory(&self, source: &Path, id: &str) -> io::Result<PathBuf> {
+        let destination = self.paths()?.cursor_root.join(id);
+        publish_directory_atomically(source, &destination)?;
+        Ok(destination)
+    }
+
+    fn remove_cursor_directory(&self, directory: &Path) -> io::Result<()> {
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn refresh_cursors(&self) -> io::Result<()> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_SETCURSORS, SPIF_SENDCHANGE, SystemParametersInfoW,
+        };
+
+        let succeeded =
+            unsafe { SystemParametersInfoW(SPI_SETCURSORS, 0, ptr::null_mut(), SPIF_SENDCHANGE) };
+        if succeeded == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn modify_shortcut_icon(&self, link: &Path, icon: &Path) -> io::Result<()> {
+        crate::shell::desktop_icon::set_icon_location(link, icon)
+    }
+
+    fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{
+            SHCNE_UPDATEITEM, SHCNF_FLUSH, SHCNF_PATHW, SHChangeNotify,
+        };
+
+        for link in links {
+            let wide = link
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            unsafe {
+                SHChangeNotify(
+                    SHCNE_UPDATEITEM as i32,
+                    SHCNF_PATHW | SHCNF_FLUSH,
+                    wide.as_ptr() as *const core::ffi::c_void,
+                    ptr::null(),
+                );
+            }
+        }
+        // SHChangeNotify 没有返回值；SHCNF_FLUSH 保证调用在通知处理完成后返回。
+        Ok(())
+    }
+
+    fn shell_is_running(&self) -> io::Result<bool> {
+        Ok(shell_window_pid()? != 0)
+    }
+
+    fn stop_shell(&self) -> io::Result<()> {
+        stop_shell_impl()
+    }
+
+    fn start_shell(&self) -> io::Result<()> {
+        start_shell_impl()
+    }
+
+    fn with_temporary_write_permission(
+        &self,
+        file: &Path,
+        operation: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        with_temporary_write_permission_impl(file, operation)
+    }
+}
+
+/// Windows 主题提交锁（named mutex）。进程异常退出后由内核句柄生命周期自动释放。
+pub struct ThemeApplyLock {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl ThemeApplyLock {
+    pub fn new() -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+
+        let name = THEME_APPLY_MUTEX_NAME
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self { handle })
+        }
+    }
+
+    /// 有界等待；超时返回 WouldBlock，进程异常退出遗留的 abandoned 状态视为可取得。
+    pub fn acquire(&self) -> io::Result<ThemeApplyGuard<'_>> {
+        use windows_sys::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        let status = unsafe { WaitForSingleObject(self.handle, THEME_APPLY_WAIT_MILLIS) };
+        if status == WAIT_OBJECT_0 || status == WAIT_ABANDONED {
+            Ok(ThemeApplyGuard { lock: self })
+        } else if status == WAIT_TIMEOUT {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another theme apply is in progress; try again later",
+            ))
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
+impl Default for ThemeApplyLock {
+    fn default() -> Self {
+        Self {
+            handle: ptr::null_mut(),
+        }
+    }
+}
+
+impl Drop for ThemeApplyLock {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+pub struct ThemeApplyGuard<'a> {
+    lock: &'a ThemeApplyLock,
+}
+
+impl Drop for ThemeApplyGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::Threading::ReleaseMutex(self.lock.handle);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 路径解析
+// ---------------------------------------------------------------------------
+
+fn resolve_theme_paths() -> io::Result<ThemePaths> {
+    use std::env;
+
+    let system_root = env::var_os("SystemRoot").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SystemRoot is not set in the Windows PE environment",
+        )
+    })?;
+    let system_root = PathBuf::from(system_root);
+    let system_volume = system_root
+        .parent()
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("\\"));
+    let session_root = system_volume.join("Users").join("Theme").join("eli");
+    let desktop_roots = resolve_desktop_roots(&system_volume)?;
+    let icon_cache_dir = resolve_icon_cache_dir()?;
+    Ok(ThemePaths {
+        system_root: system_root.clone(),
+        staging_root: session_root.join("staging"),
+        wallpaper_dir: session_root.join("wallpaper"),
+        icon_root: system_volume.join("Users").join("Icon"),
+        cursor_root: system_root.join("Cursors").join("Edgeless"),
+        desktop_roots,
+        icon_cache_dir,
+    })
+}
+
+fn resolve_desktop_roots(system_volume: &Path) -> io::Result<Vec<PathBuf>> {
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_PublicDesktop};
+
+    let mut roots = Vec::new();
+    if let Ok(current) = known_folder_path(&FOLDERID_Desktop)
+        && !roots.contains(&current)
+    {
+        roots.push(current);
+    }
+    if let Ok(public) = known_folder_path(&FOLDERID_PublicDesktop)
+        && !roots.contains(&public)
+    {
+        roots.push(public);
+    }
+    let compat = system_volume.join("Users").join("Default").join("Desktop");
+    if compat.is_dir() && !roots.contains(&compat) {
+        roots.push(compat);
+    }
+    Ok(roots)
+}
+
+fn resolve_icon_cache_dir() -> io::Result<PathBuf> {
+    use std::env;
+    use windows_sys::Win32::UI::Shell::FOLDERID_LocalAppData;
+
+    let local = env::var_os("LocalAppData")
+        .map(PathBuf::from)
+        .or_else(|| known_folder_path(&FOLDERID_LocalAppData).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "LocalAppData is not available in the Windows PE environment",
+            )
+        })?;
+    Ok(local.join("Microsoft").join("Windows").join("Explorer"))
+}
+
+fn known_folder_path(id: &windows_sys::core::GUID) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
+
+    let mut raw: windows_sys::core::PWSTR = ptr::null_mut();
+    let hr = unsafe { SHGetKnownFolderPath(id, 0, ptr::null_mut(), &mut raw) };
+    if hr != 0 {
+        return Err(io::Error::other(format!(
+            "SHGetKnownFolderPath failed with HRESULT 0x{:08x}",
+            hr
+        )));
+    }
+    if raw.is_null() {
+        return Err(io::Error::other(
+            "SHGetKnownFolderPath succeeded without returning a path",
+        ));
+    }
+    let value = unsafe {
+        let mut length = 0usize;
+        while *raw.add(length) != 0 {
+            length += 1;
+        }
+        let slice = std::slice::from_raw_parts(raw, length);
+        let value = OsString::from_wide(slice);
+        CoTaskMemFree(raw as *const core::ffi::c_void);
+        value
+    };
+    Ok(PathBuf::from(value))
+}
+
+fn system_work_directory() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| Path::new(&root).join("System32"))
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows\\System32"))
+}
+
+// ---------------------------------------------------------------------------
+// 进程执行（7-Zip / PECMD）
+// ---------------------------------------------------------------------------
+
+fn run_process(
+    executable: &Path,
+    arguments: &[OsString],
+    context: &Path,
+    timeout: std::time::Duration,
+) -> io::Result<String> {
+    let (status, stdout, stderr) =
+        run_process_output(executable, arguments, None, context, timeout)?;
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        return Err(io::Error::other(format!(
+            "{} failed with {status}: {}",
+            executable.display(),
+            truncate_text(&detail, 512)
+        )));
+    }
+    String::from_utf8(stdout).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} returned output that is not valid UTF-8: {error}",
+                executable.display()
+            ),
+        )
+    })
+}
+
+fn run_process_checked(
+    executable: &Path,
+    arguments: &[OsString],
+    working_directory: &Path,
+    timeout: std::time::Duration,
+) -> io::Result<()> {
+    let context = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (status, _stdout, stderr) = run_process_output(
+        executable,
+        arguments,
+        Some(working_directory),
+        Path::new(&context),
+        timeout,
+    )?;
+    if status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&stderr);
+        Err(io::Error::other(format!(
+            "{} exited with {status}: {}",
+            executable.display(),
+            truncate_text(&detail, 512)
+        )))
+    }
+}
+
+/// 在等待子进程时并发排空 stdout/stderr，避免 7-Zip 大清单填满管道后死锁。
+fn run_process_output(
+    executable: &Path,
+    arguments: &[OsString],
+    working_directory: Option<&Path>,
+    context: &Path,
+    timeout: std::time::Duration,
+) -> io::Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(working_directory) = working_directory {
+        command.current_dir(working_directory);
+    }
+    let mut child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to start {}: {error}", executable.display()),
+        )
+    })?;
+    let stdout = child.stdout.take().expect("stdout was configured as piped");
+    let stderr = child.stderr.take().expect("stderr was configured as piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "{} exceeded the time limit while processing {}",
+                        executable.display(),
+                        context.display()
+                    ),
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("failed to wait for {}: {error}", executable.display()),
+                ));
+            }
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| io::Error::other("stdout reader thread panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("stderr reader thread panicked"))??;
+    Ok((status, stdout, stderr))
+}
+
+fn truncate_text(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        text.to_owned()
+    } else {
+        let mut result = text.chars().take(limit).collect::<String>();
+        result.push_str("...");
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 图片解码（预检）
+// ---------------------------------------------------------------------------
+
+fn decode_image(bytes: &[u8], required_format: Option<image::ImageFormat>) -> io::Result<()> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let reader = ImageReader::new(Cursor::new(bytes));
+    let reader = reader
+        .with_guessed_format()
+        .map_err(|error| io::Error::other(format!("failed to detect the image format: {error}")))?;
+    let Some(actual) = reader.format() else {
+        return Err(io::Error::other(
+            "the input is not a supported static image format",
+        ));
+    };
+    if let Some(required) = required_format
+        && actual != required
+    {
+        return Err(io::Error::other(format!(
+            "expected {required:?} image content but the input is {actual:?}"
+        )));
+    }
+    let image = reader.decode().map_err(|error| {
+        io::Error::other(format!("failed to decode the image content: {error}"))
+    })?;
+    if image.width() == 0 || image.height() == 0 {
+        return Err(io::Error::other("the image has a zero dimension"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 注册表
+// ---------------------------------------------------------------------------
+
+const REG_SZ: u32 = 1;
+const REG_EXPAND_SZ: u32 = 2;
+
+type RegistryKey = windows_sys::Win32::System::Registry::HKEY;
+
+fn open_cursors_key(write: bool) -> io::Result<RegistryKey> {
+    open_registry_key(
+        windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
+        "Control Panel\\Cursors",
+        write,
+    )
+}
+
+fn open_schemes_key(write: bool) -> io::Result<RegistryKey> {
+    open_registry_key(
+        windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
+        "Control Panel\\Cursors\\Schemes",
+        write,
+    )
+}
+
+fn open_registry_key(root: RegistryKey, key_path: &str, write: bool) -> io::Result<RegistryKey> {
+    use windows_sys::Win32::System::Registry::{
+        KEY_READ, KEY_SET_VALUE, RegCreateKeyExW, RegOpenKeyExW,
+    };
+
+    let path = key_path.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut key: RegistryKey = ptr::null_mut();
+    let access = if write {
+        KEY_READ | KEY_SET_VALUE
+    } else {
+        KEY_READ
+    };
+    let status = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, access, &mut key) };
+    let status = status as i32;
+    if status == 0 {
+        return Ok(key);
+    }
+    if !write {
+        return Err(io::Error::from_raw_os_error(status));
+    }
+    // 写模式：键不存在时创建。
+    let status = unsafe {
+        RegCreateKeyExW(
+            root,
+            path.as_ptr(),
+            0,
+            ptr::null(),
+            0,
+            access,
+            ptr::null(),
+            &mut key,
+            ptr::null_mut(),
+        )
+    };
+    if status == 0 {
+        Ok(key)
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    }
+}
+
+fn read_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<Option<String>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::RegQueryValueExW;
+
+    let name = value_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut length = 0u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut length,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let mut buffer = vec![0u8; length as usize];
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            ptr::null(),
+            ptr::null_mut(),
+            buffer.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    buffer.truncate(length as usize);
+    let mut wide = buffer
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    if wide.last() == Some(&0) {
+        wide.pop();
+    }
+    Ok(Some(
+        OsString::from_wide(&wide).to_string_lossy().into_owned(),
+    ))
+}
+
+fn set_registry_wide(
+    key: RegistryKey,
+    value_name: &str,
+    value: &str,
+    value_type: u32,
+) -> io::Result<()> {
+    use windows_sys::Win32::System::Registry::RegSetValueExW;
+
+    let name = value_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut wide = value.encode_utf16().collect::<Vec<_>>();
+    wide.push(0);
+    let bytes = wide
+        .iter()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect::<Vec<_>>();
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            name.as_ptr(),
+            0,
+            value_type,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    }
+}
+
+fn delete_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::RegDeleteValueW;
+
+    let name = value_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let status = unsafe { RegDeleteValueW(key, name.as_ptr()) };
+    if status == 0 || status == ERROR_FILE_NOT_FOUND {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    }
+}
+
+fn read_cursors_default() -> io::Result<Option<String>> {
+    let key = open_cursors_key(false)?;
+    let result = read_registry_wide(key, "");
+    unsafe {
+        windows_sys::Win32::System::Registry::RegCloseKey(key);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Shell 生命周期与用户/会话上下文
+// ---------------------------------------------------------------------------
+
+fn shell_window_pid() -> io::Result<u32> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+
+    let class = "Shell_TrayWnd"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+    if window.is_null() {
+        return Ok(0);
+    }
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(window, &mut pid);
+    }
+    Ok(pid)
+}
+
+fn verify_shell_context_impl() -> io::Result<()> {
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    let pid = shell_window_pid()?;
+    if pid == 0 {
+        // 没有 Explorer：启动早期，允许写入当前用户 hive。按 SDD 记录用户/会话即可。
+        return Ok(());
+    }
+    let mut shell_session = 0u32;
+    let succeeded = unsafe { ProcessIdToSessionId(pid, &mut shell_session) };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let our_session = session_of_current_process()?;
+    if shell_session != our_session {
+        return Err(io::Error::other(format!(
+            "Explorer belongs to session {shell_session} but this process is in session {our_session}; refusing to modify the wrong user hive"
+        )));
+    }
+    let our_sid = process_user_sid(unsafe { GetCurrentProcessId() })?;
+    let shell_sid = process_user_sid(pid)?;
+    let equal = unsafe {
+        windows_sys::Win32::Security::EqualSid(
+            our_sid.as_ptr() as *mut core::ffi::c_void,
+            shell_sid.as_ptr() as *mut core::ffi::c_void,
+        )
+    };
+    if equal == 0 {
+        return Err(io::Error::other(
+            "Explorer belongs to a different user; refusing to modify the wrong user hive",
+        ));
+    }
+    Ok(())
+}
+
+fn session_of_current_process() -> io::Result<u32> {
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    let mut session = 0u32;
+    let succeeded = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) };
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(session)
+    }
+}
+
+fn process_user_sid(pid: u32) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Security::{
+        GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let current = unsafe { GetCurrentProcessId() };
+    let process = if pid == current {
+        unsafe { GetCurrentProcess() }
+    } else {
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        handle
+    };
+    let mut token: windows_sys::Win32::Foundation::HANDLE = ptr::null_mut();
+    let opened = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
+    if pid != current {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(process);
+        }
+    }
+    if opened == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut needed = 0u32;
+    let queried = unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut needed) };
+    if queried == 0 && needed == 0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(token);
+        }
+        return Err(error);
+    }
+    let mut buffer = vec![0u8; needed as usize];
+    let mut used = 0u32;
+    let succeeded = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr() as *mut core::ffi::c_void,
+            buffer.len() as u32,
+            &mut used,
+        )
+    };
+    let query_error = if succeeded == 0 {
+        Some(io::Error::last_os_error())
+    } else {
+        None
+    };
+    unsafe {
+        windows_sys::Win32::Foundation::CloseHandle(token);
+    }
+    if let Some(error) = query_error {
+        return Err(error);
+    }
+    let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+    if user.User.Sid.is_null() {
+        return Err(io::Error::other(
+            "the process token contains a null user SID",
+        ));
+    }
+    let length = unsafe { GetLengthSid(user.User.Sid) } as usize;
+    let mut sid = vec![0u8; length];
+    sid.copy_from_slice(unsafe { std::slice::from_raw_parts(user.User.Sid as *const u8, length) });
+    Ok(sid)
+}
+
+fn stop_shell_impl() -> io::Result<()> {
+    verify_shell_context_impl()?;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    };
+
+    let pid = shell_window_pid()?;
+    if pid == 0 {
+        return Ok(());
+    }
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let terminated = unsafe { TerminateProcess(handle, 0) };
+    if terminated == 0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(handle);
+        }
+        return Err(error);
+    }
+    let wait_status = unsafe { WaitForSingleObject(handle, 15_000) };
+    unsafe {
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+    }
+    if wait_status == WAIT_OBJECT_0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Explorer did not exit within the time limit",
+        ))
+    }
+}
+
+fn start_shell_impl() -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    let explorer = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+        .join("explorer.exe");
+    let application = explorer
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut command_line = application.clone();
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut information = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+            ptr::null(),
+            &startup,
+            &mut information,
+        )
+    };
+    if created == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    unsafe {
+        windows_sys::Win32::Foundation::CloseHandle(information.hThread);
+        windows_sys::Win32::Foundation::CloseHandle(information.hProcess);
+    }
+    // 等待桌面窗口就绪（Shell_TrayWnd 出现）。
+    let class = "Shell_TrayWnd"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    loop {
+        let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+        if !window.is_null() {
+            return Ok(());
+        }
+        if started.elapsed() >= std::time::Duration::from_millis(SHELL_WAIT_MILLIS as u64) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Explorer was started but the desktop window did not become ready in time",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ESS 临时 ACL 提升
+// ---------------------------------------------------------------------------
+
+fn with_temporary_write_permission_impl(
+    file: &Path,
+    operation: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW,
+        SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
+
+    let wide = file
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut owner: PSID = ptr::null_mut();
+    let mut group: PSID = ptr::null_mut();
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut sacl: *mut ACL = ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            &mut group,
+            &mut dacl,
+            &mut sacl,
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor_guard = LocalAllocation(descriptor);
+    let sid =
+        process_user_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() })?;
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_GENERIC_WRITE | DELETE,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: sid.as_ptr() as *mut u16,
+        },
+    };
+    let mut new_dacl: *mut ACL = ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &access, dacl, &mut new_dacl) };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let new_dacl_guard = LocalAllocation(new_dacl as *mut core::ffi::c_void);
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            new_dacl,
+            ptr::null_mut(),
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let operation_result = operation();
+    let restore_status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            owner,
+            group,
+            dacl,
+            sacl,
+        )
+    };
+    let restore_error = if restore_status != 0 {
+        Some(io::Error::from_raw_os_error(restore_status as i32))
+    } else {
+        None
+    };
+    drop(new_dacl_guard);
+    drop(descriptor_guard);
+    match (operation_result, restore_error) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(restore_error)) => Err(io::Error::new(
+            restore_error.kind(),
+            format!(
+                "operation succeeded but restoring the original security descriptor failed: {restore_error}"
+            ),
+        )),
+        (Err(operation_error), None) => Err(operation_error),
+        (Err(operation_error), Some(restore_error)) => Err(io::Error::new(
+            operation_error.kind(),
+            format!(
+                "{operation_error}; restoring the original security descriptor also failed: {restore_error}"
+            ),
+        )),
+    }
+}
+
+/// GetNamedSecurityInfoW 与 SetEntriesInAclW 返回的缓冲区由 LocalFree 释放。
+struct LocalAllocation(*mut core::ffi::c_void);
+
+impl Drop for LocalAllocation {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    const PROCESS_MUTEX_MARKER: &str = "ELI_THEME_MUTEX_TEST_MARKER";
+
+    #[test]
+    fn named_mutex_serializes_theme_commits_between_threads() {
+        let first = ThemeApplyLock::new().unwrap();
+        let first_guard = first.acquire().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+
+        let contender = std::thread::spawn(move || {
+            let second = ThemeApplyLock::new().unwrap();
+            started_tx.send(()).unwrap();
+            let _second_guard = second.acquire().unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the contender did not start");
+        assert!(
+            acquired_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        drop(first_guard);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the contender did not acquire the released mutex");
+        contender.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "只由跨进程 named mutex 测试作为子进程调用"]
+    fn named_mutex_process_child() {
+        let Some(marker) = std::env::var_os(PROCESS_MUTEX_MARKER).map(PathBuf::from) else {
+            return;
+        };
+        std::fs::write(marker.join("started"), b"").unwrap();
+        let lock = ThemeApplyLock::new().unwrap();
+        let _guard = lock.acquire().unwrap();
+        std::fs::write(marker.join("acquired"), b"").unwrap();
+    }
+
+    #[test]
+    fn named_mutex_serializes_theme_commits_between_processes() {
+        let marker = std::env::temp_dir().join(format!(
+            "eli-theme-mutex-{}-{}",
+            std::process::id(),
+            super::super::transaction::unique_transaction_id()
+        ));
+        std::fs::create_dir_all(&marker).unwrap();
+        let lock = ThemeApplyLock::new().unwrap();
+        let guard = lock.acquire().unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "command::theme::apply::details::windows::tests::named_mutex_process_child",
+                "--nocapture",
+            ])
+            .env(PROCESS_MUTEX_MARKER, &marker)
+            .spawn()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        while !marker.join("started").is_file() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.join("started").is_file(), "the child did not start");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !marker.join("acquired").exists(),
+            "the child acquired a mutex that the parent still owned"
+        );
+
+        drop(guard);
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "the mutex child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(marker.join("acquired").is_file());
+        std::fs::remove_dir_all(marker).unwrap();
+    }
+}

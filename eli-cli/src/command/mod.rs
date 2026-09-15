@@ -5,6 +5,8 @@ pub(crate) mod kernel;
 pub(crate) mod loadscreen;
 pub(crate) mod nespak;
 pub(crate) mod plugin;
+#[cfg(feature = "theme-apply")]
+pub(crate) mod theme;
 
 use eli_lib::command::bootdisk::{BootDiskSelection, BootDiskSelectionSource};
 

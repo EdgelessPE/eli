@@ -10,6 +10,8 @@ use command::kernel::KernelCommand;
 use command::loadscreen::LoadscreenCommand;
 use command::nespak::NesPakCommand;
 use command::plugin::PluginCommand;
+#[cfg(feature = "theme-apply")]
+use command::theme::ThemeCommand;
 use eli_lib::Ctx;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,6 +64,12 @@ enum Command {
         #[command(subcommand)]
         command: NesPakCommand,
     },
+    /// Apply theme packages to the current Edgeless PE session.
+    #[cfg(feature = "theme-apply")]
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommand,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -76,6 +84,8 @@ fn main() -> std::io::Result<()> {
         Command::Kernel { command } => command::kernel::execute(ctx.as_ref(), command),
         Command::Loadscreen { command } => command::loadscreen::execute(ctx.as_ref(), command),
         Command::Nespak { command } => command::nespak::execute(ctx.as_ref(), command),
+        #[cfg(feature = "theme-apply")]
+        Command::Theme { command } => command::theme::execute(ctx, command),
     }
 }
 
@@ -87,7 +97,22 @@ mod tests {
         KernelAlphaCommand, KernelAlphaVersionCommand, KernelVersionCommand,
     };
     use crate::command::plugin::PluginAttributeArg;
+    #[cfg(feature = "theme-apply")]
+    use crate::command::theme::ThemeCommand;
     use std::path::Path;
+
+    #[cfg(feature = "theme-apply")]
+    #[test]
+    fn parses_theme_apply_with_a_package_path() {
+        let cli = Cli::try_parse_from(["eli", "theme", "apply", "D:\\Themes\\Sample.eth"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Theme {
+                command: ThemeCommand::Apply { package }
+            } if package == Path::new("D:\\Themes\\Sample.eth")
+        ));
+    }
 
     #[test]
     fn parses_global_bootdisk_before_the_command() {

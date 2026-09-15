@@ -5,3 +5,5 @@ pub mod kernel;
 pub mod loadscreen;
 pub mod nespak;
 pub mod plugin;
+#[cfg(feature = "theme-apply")]
+pub mod theme;
