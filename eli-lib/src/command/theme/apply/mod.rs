@@ -2,25 +2,37 @@
 //
 // 本模块只承载跨组件共享的结构与接口：组件各自的具体预检/提交逻辑位于
 // `archive`、`transaction`、`refresh`、`wallpaper`、`eis`、`ems`、`esc`、
-// `ess` 文件中，真实 Win32 副作用集中在 `windows`。非 Windows 平台构建时，
-// 编排逻辑仍可编译并用 fake 后端做单元测试，只有运行期入口要求 WindowsPE。
+// `ess` 文件中，真实 Win32 副作用集中在 `windows`。非 Windows 生产构建只保留
+// 公开结果类型和平台拒绝入口；测试构建仍编译完整编排逻辑并使用 fake 后端验证。
 
+#[cfg(any(windows, test))]
 pub(super) mod archive;
+#[cfg(any(windows, test))]
 pub(super) mod eis;
+#[cfg(any(windows, test))]
 pub(super) mod ems;
+#[cfg(any(windows, test))]
 pub(super) mod esc;
+#[cfg(any(windows, test))]
 pub(super) mod ess;
+#[cfg(any(windows, test))]
 pub(super) mod event_log;
+#[cfg(any(windows, test))]
 pub(super) mod refresh;
 #[cfg(test)]
 pub mod test_support;
+#[cfg(any(windows, test))]
 pub(super) mod transaction;
+#[cfg(any(windows, test))]
 pub(super) mod wallpaper;
 #[cfg(windows)]
 pub(super) mod windows;
 
+#[cfg(any(windows, test))]
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(any(windows, test))]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// 外层主题包类型（按扩展名路由）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +173,7 @@ impl ApplySummary {
 }
 
 /// 当前 PE 会话的主题运行时路径，集中解析避免各组件重复猜测。
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone)]
 pub struct ThemePaths {
     /// %SystemRoot%。
@@ -179,6 +192,7 @@ pub struct ThemePaths {
     pub icon_cache_dir: PathBuf,
 }
 
+#[cfg(any(windows, test))]
 impl ThemePaths {
     /// 会话稳定壁纸文件路径。
     pub fn wallpaper_file(&self) -> PathBuf {
@@ -187,12 +201,14 @@ impl ThemePaths {
 }
 
 /// 光标注册表快照（撤销 EMS 写入用）。
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryValueSnapshot {
     pub value_type: u32,
     pub data: Vec<u8>,
 }
 
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, Default)]
 pub struct CursorSnapshot {
     /// 17 个槽位的当前值；None 表示 HKCU 中没有该槽位。
@@ -210,6 +226,7 @@ pub struct CursorSnapshot {
 /// Windows 真实实现位于 `windows.rs`（7-Zip/PECMD 进程、注册表、COM、
 /// SPI、Explorer 生命周期、ACL 与命名互斥体）；单元测试使用 fake 实现，
 /// 使编排逻辑、组件预检与提交时序能够在 Windows、Linux、macOS 上验证。
+#[cfg(any(windows, test))]
 pub trait ThemeBackend: Send + Sync {
     /// 当前会话的主题运行时路径。
     fn theme_paths(&self) -> io::Result<ThemePaths>;

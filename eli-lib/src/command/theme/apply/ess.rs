@@ -60,14 +60,19 @@ fn validate_pe_bytes(contents: &[u8]) -> Result<(), String> {
         u16::from_le_bytes(contents[pe_offset + 20..pe_offset + 22].try_into().unwrap()) as usize;
     let characteristics =
         u16::from_le_bytes(contents[pe_offset + 22..pe_offset + 24].try_into().unwrap());
-    let (expected_machine, expected_magic, minimum_optional_size) = if cfg!(target_arch = "x86_64")
-    {
-        (0x8664u16, 0x20bu16, 0xf0usize)
-    } else if cfg!(target_arch = "x86") {
-        (0x14cu16, 0x10bu16, 0xe0usize)
-    } else {
-        return Err("theme apply only supports x86/x64 PE architectures".to_owned());
-    };
+    let (expected_machine, expected_magic, minimum_optional_size) =
+        if cfg!(all(windows, target_arch = "x86")) {
+            (0x14cu16, 0x10bu16, 0xe0usize)
+        } else if cfg!(any(
+            all(windows, target_arch = "x86_64"),
+            all(test, not(windows))
+        )) {
+            // 非 Windows 宿主上的 fake 后端统一模拟当前主流的 x64 PE，避免把
+            // macOS ARM64 宿主架构错误映射成不存在的 Windows ARM64 主题包。
+            (0x8664u16, 0x20bu16, 0xf0usize)
+        } else {
+            return Err("theme apply only supports x86/x64 PE architectures".to_owned());
+        };
     if machine != expected_machine {
         return Err(format!(
             "machine type 0x{machine:04x} does not match the current PE architecture"
@@ -393,19 +398,18 @@ fn restore_slot(backend: &dyn ThemeBackend, slot: &EssFileSlot) -> io::Result<()
 mod tests {
     use super::*;
     use crate::command::theme::apply::details::archive::ArchiveEntry;
-    use crate::command::theme::apply::test_support::{FakeArchive, FakeBackend};
+    use crate::command::theme::apply::test_support::{FakeArchive, FakeBackend, test_root};
     use std::collections::HashMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn matching_pe_bytes() -> Vec<u8> {
         let mut contents = vec![0u8; 1024];
         contents[..2].copy_from_slice(b"MZ");
         contents[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
         contents[0x80..0x84].copy_from_slice(b"PE\0\0");
-        let (machine, magic, optional_size) = if cfg!(target_arch = "x86_64") {
-            (0x8664u16, 0x20bu16, 0xf0u16)
-        } else {
+        let (machine, magic, optional_size) = if cfg!(all(windows, target_arch = "x86")) {
             (0x14cu16, 0x10bu16, 0xe0u16)
+        } else {
+            (0x8664u16, 0x20bu16, 0xf0u16)
         };
         contents[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
         contents[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
@@ -430,10 +434,10 @@ mod tests {
     fn rejects_broken_or_wrong_architecture_pe_files() {
         assert!(validate_pe_bytes(b"not a dll").is_err());
         let mut contents = matching_pe_bytes();
-        let wrong_machine = if cfg!(target_arch = "x86_64") {
-            0x14cu16
-        } else {
+        let wrong_machine = if cfg!(all(windows, target_arch = "x86")) {
             0x8664u16
+        } else {
+            0x14cu16
         };
         contents[0x84..0x86].copy_from_slice(&wrong_machine.to_le_bytes());
         assert!(validate_pe_bytes(&contents).is_err());
@@ -452,15 +456,7 @@ mod tests {
 
     #[test]
     fn preserves_actual_entry_case_when_extracting_ess_files() {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-ess-case-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("ess-case");
         let archive = root.join("icons.ess");
         std::fs::write(&archive, b"fake archive").unwrap();
         let backend = FakeBackend::new(root.clone());
@@ -506,15 +502,7 @@ mod tests {
 
     #[test]
     fn restores_both_dlls_when_the_second_replacement_fails() {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-ess-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("ess-replace");
         let targets = root.join("Windows/System32");
         std::fs::create_dir_all(&targets).unwrap();
         let old_imageres = targets.join("imageres.dll");
@@ -561,15 +549,7 @@ mod tests {
 
     #[test]
     fn attempts_both_dll_restores_when_the_first_restore_fails() {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-ess-restore-all-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = test_root("ess-restore-all");
         let first_target = root.join("imageres.dll");
         let second_target = root.join("imagesp1.dll");
         let second_backup = root.join("imagesp1.backup.dll");

@@ -75,17 +75,7 @@ pub fn commit_wallpaper(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::theme::apply::test_support::FakeBackend;
-
-    fn test_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-wallpaper-{label}-{}-{}",
-            std::process::id(),
-            super::super::transaction::unique_transaction_id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
+    use crate::command::theme::apply::test_support::{FakeBackend, test_root};
 
     #[test]
     fn keeps_the_stable_wallpaper_after_the_prepared_source_is_removed() {

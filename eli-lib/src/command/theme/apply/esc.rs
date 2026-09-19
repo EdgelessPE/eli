@@ -71,11 +71,11 @@ fn check_encoding_integrity(contents: &[u8]) -> Result<(), String> {
                 return Err("UTF-16 BOM 后内容长度不是偶数或为空".to_owned());
             }
             let little_endian = prefix == [0xFF, 0xFE];
-            let units = contents[2..].chunks_exact(2).map(|pair| {
+            let units = contents[2..].as_chunks::<2>().0.iter().map(|pair| {
                 if little_endian {
-                    u16::from_le_bytes([pair[0], pair[1]])
+                    u16::from_le_bytes(*pair)
                 } else {
-                    u16::from_be_bytes([pair[0], pair[1]])
+                    u16::from_be_bytes(*pair)
                 }
             });
             if std::char::decode_utf16(units).any(|character| character.is_err()) {
@@ -123,14 +123,10 @@ pub fn commit_esc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::theme::apply::test_support::test_root;
 
     fn test_file(name: &str, contents: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "eli-theme-esc-{}-{}",
-            std::process::id(),
-            super::super::transaction::unique_transaction_id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = test_root("esc");
         let path = dir.join(name);
         std::fs::File::create(&path).unwrap();
         if !contents.is_empty() {

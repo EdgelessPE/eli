@@ -174,7 +174,9 @@ fn contains_edgeless_text(contents: &[u8]) -> bool {
     }
     contents.windows(16).any(|window| {
         window
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(b"Edgeless")
             .all(|(unit, expected)| unit[1] == 0 && unit[0].eq_ignore_ascii_case(expected))
     })

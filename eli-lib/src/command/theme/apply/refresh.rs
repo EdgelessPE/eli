@@ -222,6 +222,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::command::theme::apply::test_support::test_root;
 
     fn test_paths(root: &Path) -> ThemePaths {
         ThemePaths {
@@ -233,10 +234,6 @@ mod tests {
             desktop_roots: Vec::new(),
             icon_cache_dir: root.join("cache"),
         }
-    }
-
-    fn test_root(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("eli-theme-refresh-{label}-{}", std::process::id()))
     }
 
     #[test]

@@ -313,7 +313,7 @@ fn finish_ems_rollback(
 mod tests {
     use super::*;
     use crate::command::theme::apply::details::archive::ArchiveEntry;
-    use crate::command::theme::apply::test_support::FakeBackend;
+    use crate::command::theme::apply::test_support::{FakeBackend, test_root};
 
     fn archive_entry(path: &str) -> ArchiveEntry {
         ArchiveEntry {
@@ -335,16 +335,6 @@ mod tests {
             desktop_roots: vec![],
             icon_cache_dir: root.join("Cache"),
         }
-    }
-
-    fn test_root(label: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-ems-{label}-{}-{}",
-            std::process::id(),
-            super::super::transaction::unique_transaction_id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
     }
 
     #[test]

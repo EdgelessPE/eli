@@ -79,6 +79,7 @@ fn escape_field(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::theme::apply::test_support::test_root;
     use std::path::PathBuf;
 
     #[test]
@@ -88,11 +89,7 @@ mod tests {
 
     #[test]
     fn writes_all_required_event_fields_and_the_windows_error_code() {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-event-log-{}-{}",
-            std::process::id(),
-            super::super::transaction::unique_transaction_id()
-        ));
+        let root = test_root("event-log");
         let paths = ThemePaths {
             system_root: root.join("Windows"),
             staging_root: root.join("Users/Theme/eli/staging"),

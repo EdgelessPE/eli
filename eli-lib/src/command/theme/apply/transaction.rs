@@ -503,15 +503,10 @@ pub fn name_matches(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::theme::apply::test_support::test_root;
 
     fn test_dir() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "eli-theme-transaction-{}-{}",
-            std::process::id(),
-            unique_transaction_id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
+        test_root("transaction")
     }
 
     #[test]

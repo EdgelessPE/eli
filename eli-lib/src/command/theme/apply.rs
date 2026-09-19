@@ -12,19 +12,24 @@ use crate::dependency::{RuntimeCapability, RuntimeEnvironment};
 use std::io;
 use std::path::Path;
 
+#[cfg(any(windows, test))]
 use details::archive::{ETH_LIMITS, validate_listing};
+#[cfg(any(windows, test))]
 use details::refresh::{RefreshPlan, RefreshRequest};
 #[cfg(test)]
 pub use details::test_support;
+#[cfg(any(windows, test))]
 use details::transaction::StagingDir;
 pub use details::{
     ApplySummary, ComponentOutcome, ComponentStatus, EisStats, ExecutedRefresh, ThemeComponent,
     ThemeType,
 };
+#[cfg(any(windows, test))]
 use details::{ThemeBackend, ThemePaths};
 
 /// ELS 迁移警告的稳定消息（每个 ELS 组件只输出一次）。具体中英文措辞可由
 /// CLI 本地化，但关键字由测试与端到端用例断言。
+#[cfg(any(windows, test))]
 pub const ELS_WARNING: &str = "legacy LoadScreen.els is a startup resource and cannot affect the current PE session; skipped by `eli theme apply`; startup persistence is outside this command";
 
 /// 识别外层主题包类型并确认输入是普通文件（在任何副作用前完成）。
@@ -113,6 +118,7 @@ fn outer_component_name(kind: ThemeType) -> &'static str {
     }
 }
 
+#[cfg(any(windows, test))]
 fn component_error(component: ThemeComponent, phase: &str, error: io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
@@ -170,6 +176,7 @@ fn apply_with_backend(
 ///
 /// `staging` 仅在需要解压/发布资源时创建；ELS 独立包与只含 ELS 的 `.eth`
 /// 不创建 staging（SDD：ELS 不解析 7-Zip、不创建 staging、不打开归档）。
+#[cfg(any(windows, test))]
 struct PreparedTheme {
     source: std::path::PathBuf,
     kind: ThemeType,
@@ -180,6 +187,7 @@ struct PreparedTheme {
     warnings: Vec<String>,
 }
 
+#[cfg(any(windows, test))]
 enum PreparedComponent {
     Wallpaper(details::wallpaper::PreparedWallpaper),
     LoadScreen,
@@ -189,6 +197,7 @@ enum PreparedComponent {
     SystemIconPack(Box<details::ess::PreparedEss>),
 }
 
+#[cfg(any(windows, test))]
 fn prepare_package(
     package: &Path,
     kind: ThemeType,
@@ -292,6 +301,7 @@ fn prepare_package(
 
 /// `.eth` 组合主题：列出根目录 → 识别规范组件 → PECMD 依赖判断 → 白名单解压 →
 /// 全部可应用组件的独立预检（ELS 只记录跳过）。
+#[cfg(any(windows, test))]
 fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result<PreparedTheme> {
     backend.require_seven_zip()?;
     let entries = backend.list_archive(package)?;
@@ -495,6 +505,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
 
 /// 提交阶段：在 named mutex 内按数据依赖提交组件，累计刷新请求，
 /// 最后由统一 RefreshPlan 以最小刷新集合执行。
+#[cfg(any(windows, test))]
 fn commit_prepared(
     prepared: &PreparedTheme,
     backend: &dyn ThemeBackend,
@@ -790,20 +801,16 @@ fn commit_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::theme::apply::test_support::{FakeArchive, FakeBackend};
+    use crate::command::theme::apply::test_support::{
+        FakeArchive, FakeBackend, test_root as make_test_root,
+    };
     use details::archive::ArchiveEntry;
     use details::refresh::{RefreshPlan, RefreshRequest};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn test_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-apply-{}-{}",
-            std::process::id(),
-            details::transaction::unique_transaction_id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        make_test_root("apply")
     }
 
     fn entry(path: &str, is_directory: bool) -> ArchiveEntry {
@@ -846,10 +853,10 @@ mod tests {
         bytes[..2].copy_from_slice(b"MZ");
         bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
         bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-        let (machine, magic, optional_size) = if cfg!(target_arch = "x86_64") {
-            (0x8664u16, 0x20bu16, 0xf0u16)
-        } else {
+        let (machine, magic, optional_size) = if cfg!(all(windows, target_arch = "x86")) {
             (0x14cu16, 0x10bu16, 0xe0u16)
+        } else {
+            (0x8664u16, 0x20bu16, 0xf0u16)
         };
         bytes[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
         bytes[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());

@@ -281,17 +281,13 @@ fn find_links_by_stem(paths: &ThemePaths, stem: &str) -> io::Result<Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::theme::apply::test_support::{FakeArchive, FakeBackend};
+    use crate::command::theme::apply::test_support::{
+        FakeArchive, FakeBackend, test_root as make_test_root,
+    };
     use std::collections::HashMap;
 
     fn test_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "eli-theme-eis-{}-{}",
-            std::process::id(),
-            super::super::transaction::unique_transaction_id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        make_test_root("eis")
     }
 
     fn paths_at(root: &Path, desktop: &Path) -> ThemePaths {

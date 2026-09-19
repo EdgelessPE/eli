@@ -336,9 +336,10 @@ mod tests {
                 )
             };
             assert!(hr >= 0, "IShellLinkW::GetPath failed: 0x{hr:08x}");
+            let loaded_target = std::path::PathBuf::from(decode_wide(&target_buffer));
             assert_eq!(
-                std::path::PathBuf::from(decode_wide(&target_buffer)),
-                target
+                std::fs::canonicalize(loaded_target).unwrap(),
+                std::fs::canonicalize(&target).unwrap()
             );
             unsafe {
                 release_interfaces(shell_link, persist_file);

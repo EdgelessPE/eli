@@ -7,9 +7,29 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::archive::ArchiveEntry;
 use super::{CursorSnapshot, RegistryValueSnapshot, ThemeBackend, ThemePaths};
+
+static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// 创建不经过宿主机符号链接别名的唯一测试目录。
+///
+/// macOS 的临时目录通常从 `/var` 返回，而 `/var` 是指向 `/private/var` 的
+/// 符号链接。先规范化已经存在的临时目录根，避免路径安全测试把系统别名误判为
+/// 测试数据中的逃逸链接。
+pub fn test_root(label: &str) -> PathBuf {
+    let temporary = std::env::temp_dir();
+    let temporary = std::fs::canonicalize(&temporary).unwrap_or(temporary);
+    let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = temporary.join(format!(
+        "eli-theme-{label}-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
 
 /// 一个可被 fake 后端“打开”的归档：列出条目并按白名单在目标目录中物化文件。
 #[derive(Debug, Clone)]
@@ -498,8 +518,10 @@ fn fake_registry_snapshot(value: &str, value_type: u32) -> RegistryValueSnapshot
 fn fake_registry_string(value: &RegistryValueSnapshot) -> String {
     let mut units = value
         .data
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect::<Vec<_>>();
     if units.last() == Some(&0) {
         units.pop();
