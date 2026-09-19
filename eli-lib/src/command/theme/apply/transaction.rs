@@ -71,30 +71,55 @@ pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+            REPLACEFILE_WRITE_THROUGH, ReplaceFileW,
         };
 
-        let source = source
+        let source_wide = source
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
-        let destination = destination
+        let destination_wide = destination
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
         let succeeded = unsafe {
             MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
+                source_wide.as_ptr(),
+                destination_wide.as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             )
         };
-        if succeeded == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
+        if succeeded != 0 {
+            return Ok(());
         }
+        let move_error = io::Error::last_os_error();
+
+        // Windows PE 的 WIM 覆盖层可能拒绝 MoveFileExW 替换 System32 中的既有
+        // 文件，但允许专为“替换现有文件”设计的 ReplaceFileW。两者都保持同卷
+        // 原子切换；目标不存在时上面的 MoveFileExW 已处理正常发布路径。
+        let replaced = unsafe {
+            ReplaceFileW(
+                destination_wide.as_ptr(),
+                source_wide.as_ptr(),
+                std::ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+        let replace_error = io::Error::last_os_error();
+        Err(io::Error::new(
+            move_error.kind(),
+            format!(
+                "MoveFileExW failed for {}: {move_error}; ReplaceFileW also failed: {replace_error}",
+                destination.display()
+            ),
+        ))
     }
     #[cfg(not(windows))]
     {

@@ -394,13 +394,8 @@ mod tests {
             )],
         };
 
-        let error = commit_eis(
-            &prepared,
-            &backend,
-            &paths,
-            &mut RefreshPlan::default(),
-        )
-        .unwrap_err();
+        let error =
+            commit_eis(&prepared, &backend, &paths, &mut RefreshPlan::default()).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(error.to_string().contains("no current, public"));

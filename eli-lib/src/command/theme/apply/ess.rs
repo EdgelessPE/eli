@@ -269,10 +269,18 @@ impl EssCommit {
     /// 在 Explorer 停止期间执行双 DLL 替换；失败时恢复两个旧 DLL。
     pub fn replace(&self, backend: &dyn ThemeBackend) -> io::Result<()> {
         if let Err(error) = replace_slot(backend, &self.imageres) {
-            return Err(restore_error(error, self, backend));
+            return Err(restore_error(
+                io::Error::new(error.kind(), format!("replace imageres.dll: {error}")),
+                self,
+                backend,
+            ));
         }
         if let Err(error) = replace_slot(backend, &self.imagesp1) {
-            return Err(restore_error(error, self, backend));
+            return Err(restore_error(
+                io::Error::new(error.kind(), format!("replace imagesp1.dll: {error}")),
+                self,
+                backend,
+            ));
         }
         Ok(())
     }
@@ -349,7 +357,17 @@ fn replace_with_permission(
     match atomic_replace(source, target) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            backend.with_temporary_write_permission(target, &mut || atomic_replace(source, target))
+            backend
+                .with_temporary_write_permission(target, &mut || atomic_replace(source, target))
+                .map_err(|permission_error| {
+                    io::Error::new(
+                        permission_error.kind(),
+                        format!(
+                            "temporary permission fallback failed for {} after the initial replace was denied: {permission_error}",
+                            target.display()
+                        ),
+                    )
+                })
         }
         Err(error) => Err(error),
     }

@@ -187,31 +187,44 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
 
     fn snapshot_cursors(&self, target_scheme: &str) -> io::Result<CursorSnapshot> {
         let mut slots = std::array::from_fn(|_| None);
-        let cursors_key = open_cursors_key(false)?;
-        let slots_result: io::Result<()> = (|| {
-            let names = BASE_SLOTS
-                .iter()
-                .chain(OPTIONAL_SLOTS.iter())
-                .map(|(_, registry_name)| *registry_name);
-            for (slot, registry_name) in names.enumerate() {
-                slots[slot] = read_registry_value(cursors_key, registry_name)?;
+        let default_scheme = match open_cursors_key(false) {
+            Ok(cursors_key) => {
+                let values_result: io::Result<Option<RegistryValueSnapshot>> = (|| {
+                    let names = BASE_SLOTS
+                        .iter()
+                        .chain(OPTIONAL_SLOTS.iter())
+                        .map(|(_, registry_name)| *registry_name);
+                    for (slot, registry_name) in names.enumerate() {
+                        slots[slot] = read_registry_value(cursors_key, registry_name)?;
+                    }
+                    read_registry_value(cursors_key, "")
+                })();
+                unsafe {
+                    windows_sys::Win32::System::Registry::RegCloseKey(cursors_key);
+                }
+                values_result?
             }
-            Ok(())
-        })();
-        unsafe {
-            windows_sys::Win32::System::Registry::RegCloseKey(cursors_key);
-        }
-        slots_result?;
-        let schemes_key = open_schemes_key(false)?;
-        let scheme_value = read_registry_value(schemes_key, target_scheme);
-        unsafe {
-            windows_sys::Win32::System::Registry::RegCloseKey(schemes_key);
-        }
-        let default_scheme = read_cursors_default()?;
+            // 精简 PE 可能尚未初始化整个 Cursors 键；其快照等价于所有值缺失。
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let scheme_value = match open_schemes_key(false) {
+            Ok(schemes_key) => {
+                let value = read_registry_value(schemes_key, target_scheme);
+                unsafe {
+                    windows_sys::Win32::System::Registry::RegCloseKey(schemes_key);
+                }
+                value?
+            }
+            // 精简 PE 可能从未创建过 Schemes 子键；这与目标方案值不存在等价，
+            // 提交阶段会通过写模式创建该键。
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         Ok(CursorSnapshot {
             slots,
             default_scheme,
-            target_scheme: scheme_value?,
+            target_scheme: scheme_value,
             scheme_name: target_scheme.to_owned(),
         })
     }
@@ -949,15 +962,6 @@ fn delete_registry_wide(key: RegistryKey, value_name: &str) -> io::Result<()> {
     }
 }
 
-fn read_cursors_default() -> io::Result<Option<RegistryValueSnapshot>> {
-    let key = open_cursors_key(false)?;
-    let result = read_registry_value(key, "");
-    unsafe {
-        windows_sys::Win32::System::Registry::RegCloseKey(key);
-    }
-    result
-}
-
 // ---------------------------------------------------------------------------
 // Shell 生命周期与用户/会话上下文
 // ---------------------------------------------------------------------------
@@ -1244,7 +1248,14 @@ fn with_temporary_write_permission_impl(
         )
     };
     if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
+        return Err(io::Error::new(
+            io::Error::from_raw_os_error(status as i32).kind(),
+            format!(
+                "GetNamedSecurityInfoW failed for {}: {}",
+                file.display(),
+                io::Error::from_raw_os_error(status as i32)
+            ),
+        ));
     }
     let descriptor_guard = LocalAllocation(descriptor);
     let sid =
@@ -1264,7 +1275,14 @@ fn with_temporary_write_permission_impl(
     let mut new_dacl: *mut ACL = ptr::null_mut();
     let status = unsafe { SetEntriesInAclW(1, &access, dacl, &mut new_dacl) };
     if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
+        return Err(io::Error::new(
+            io::Error::from_raw_os_error(status as i32).kind(),
+            format!(
+                "SetEntriesInAclW failed for {}: {}",
+                file.display(),
+                io::Error::from_raw_os_error(status as i32)
+            ),
+        ));
     }
     let new_dacl_guard = LocalAllocation(new_dacl as *mut core::ffi::c_void);
     let status = unsafe {
@@ -1294,13 +1312,30 @@ fn with_temporary_write_permission_impl(
         return finish_temporary_permission(operation_result, restore_status);
     }
     if status != windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED {
-        return Err(io::Error::from_raw_os_error(status as i32));
+        return Err(io::Error::new(
+            io::Error::from_raw_os_error(status as i32).kind(),
+            format!(
+                "setting the temporary DACL failed for {}: {}",
+                file.display(),
+                io::Error::from_raw_os_error(status as i32)
+            ),
+        ));
     }
 
     // 受保护文件通常不允许直接改 DACL。先确保两个特权都可用，避免接管所有权后
     // 才发现无法恢复原所有者；随后只在本次操作期间临时接管并在末尾完整还原。
-    let _take_ownership = enable_process_privilege(SE_TAKE_OWNERSHIP_NAME)?;
-    let _restore = enable_process_privilege(SE_RESTORE_NAME)?;
+    let _take_ownership = enable_process_privilege(SE_TAKE_OWNERSHIP_NAME).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to enable SeTakeOwnershipPrivilege: {error}"),
+        )
+    })?;
+    let _restore = enable_process_privilege(SE_RESTORE_NAME).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to enable SeRestorePrivilege: {error}"),
+        )
+    })?;
     let owner_status = unsafe {
         SetNamedSecurityInfoW(
             wide.as_ptr(),
@@ -1313,7 +1348,14 @@ fn with_temporary_write_permission_impl(
         )
     };
     if owner_status != 0 {
-        return Err(io::Error::from_raw_os_error(owner_status as i32));
+        return Err(io::Error::new(
+            io::Error::from_raw_os_error(owner_status as i32).kind(),
+            format!(
+                "taking temporary ownership of {} failed: {}",
+                file.display(),
+                io::Error::from_raw_os_error(owner_status as i32)
+            ),
+        ));
     }
     let dacl_status = unsafe {
         SetNamedSecurityInfoW(
@@ -1339,7 +1381,14 @@ fn with_temporary_write_permission_impl(
             )
         };
         return finish_temporary_permission(
-            Err(io::Error::from_raw_os_error(dacl_status as i32)),
+            Err(io::Error::new(
+                io::Error::from_raw_os_error(dacl_status as i32).kind(),
+                format!(
+                    "setting the temporary DACL after taking ownership of {} failed: {}",
+                    file.display(),
+                    io::Error::from_raw_os_error(dacl_status as i32)
+                ),
+            )),
             restore_status,
         );
     }
@@ -1491,6 +1540,21 @@ mod tests {
     use std::sync::mpsc;
 
     const PROCESS_MUTEX_MARKER: &str = "ELI_THEME_MUTEX_TEST_MARKER";
+
+    #[test]
+    fn temporary_permission_reports_restore_failures_without_hiding_the_operation_result() {
+        let restore_code = windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+
+        let error = finish_temporary_permission(Ok(()), restore_code).unwrap_err();
+        assert!(error.to_string().contains("operation succeeded"));
+        assert!(error.to_string().contains("security descriptor"));
+
+        let error =
+            finish_temporary_permission(Err(io::Error::other("replace failed")), restore_code)
+                .unwrap_err();
+        assert!(error.to_string().contains("replace failed"));
+        assert!(error.to_string().contains("also failed"));
+    }
 
     #[test]
     fn named_mutex_serializes_theme_commits_between_threads() {

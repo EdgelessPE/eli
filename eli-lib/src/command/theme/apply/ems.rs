@@ -226,12 +226,28 @@ fn expand_cursor_path(id: &str, file_name: &str) -> String {
 
 /// 提交 EMS：发布目录、写注册表、刷新光标；任一写入或 SPI 失败时恢复快照。
 pub fn commit_ems(prepared: &PreparedEms, backend: &dyn ThemeBackend) -> io::Result<Vec<String>> {
-    backend.verify_shell_context()?;
+    backend.verify_shell_context().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to verify the cursor Shell context: {error}"),
+        )
+    })?;
     let id = unique_cursor_id(&prepared.paths);
-    let published = backend.publish_cursor_directory(&prepared.source_dir, &id)?;
+    let published = backend
+        .publish_cursor_directory(&prepared.source_dir, &id)
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to publish the cursor directory: {error}"),
+            )
+        })?;
     let snapshot = match backend.snapshot_cursors(&id) {
         Ok(snapshot) => snapshot,
         Err(error) => {
+            let error = io::Error::new(
+                error.kind(),
+                format!("failed to snapshot the cursor registry state: {error}"),
+            );
             return match backend.remove_cursor_directory(&published) {
                 Ok(()) => Err(error),
                 Err(remove_error) => Err(io::Error::new(

@@ -14,7 +14,7 @@ use super::transaction::{case_fold, path_is_within};
 /// 单个 7z 条目的技术信息（解析自 `7z l -slt -sccUTF-8` 输出）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntry {
-    /// 归档内相对路径（7z 使用 `/` 分隔）。
+    /// 归档内相对路径；解析时统一为 `/` 分隔。
     pub path: String,
     pub size: u64,
     pub is_directory: bool,
@@ -228,7 +228,10 @@ pub fn parse_listing(output: &str) -> io::Result<Vec<ArchiveEntry>> {
 
 fn to_entry(raw: (String, u64, bool, bool, bool)) -> ArchiveEntry {
     ArchiveEntry {
-        path: raw.0,
+        // Windows 版 7-Zip 的技术清单使用 `\` 展示目录层级。先归一化再进入
+        // 安全校验，使合法 Windows 创建包可用，同时让 UNC、盘符和 `..\`
+        // 等危险形式落入同一套 `/` 路径检查。
+        path: raw.0.replace('\\', "/"),
         size: raw.1,
         is_directory: raw.2,
         encrypted: raw.3,
@@ -349,6 +352,27 @@ SymLink = +
 
         assert!(entries[0].encrypted);
         assert!(entries[1].is_link);
+    }
+
+    #[test]
+    fn normalizes_windows_7zip_entry_separators_before_validation() {
+        let output = "\
+Path = shortcut\\NTSetup.ico
+Size = 1
+Attributes = A
+Encrypted =
+
+";
+        let entries = parse_listing(output).unwrap();
+
+        assert_eq!(entries[0].path, "shortcut/NTSetup.ico");
+        assert!(validate_listing(&entries, &EIS_LIMITS).is_ok());
+
+        for dangerous in ["..\\escape.txt", "C:\\drive.txt", "\\\\server\\share.txt"] {
+            let listing = format!("Path = {dangerous}\nSize = 1\nAttributes = A\n");
+            let entries = parse_listing(&listing).unwrap();
+            assert!(validate_listing(&entries, &EIS_LIMITS).is_err());
+        }
     }
 
     #[test]

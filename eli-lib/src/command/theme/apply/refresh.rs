@@ -165,7 +165,13 @@ impl RefreshPlan {
 
 /// 在精确图标缓存目录第一层删除普通 `*.db` 文件；不得递归、不得越界。
 fn clear_icon_db_cache(paths: &ThemePaths) -> io::Result<()> {
-    super::transaction::ensure_existing_directory_not_reparse(&paths.icon_cache_dir)?;
+    match super::transaction::ensure_existing_directory_not_reparse(&paths.icon_cache_dir) {
+        Ok(()) => {}
+        // 干净启动的精简 PE 可能尚未创建 Explorer 缓存目录；此时没有缓存
+        // 需要失效，按成功处理，同时仍拒绝已存在的重解析点目录。
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
     let entries = match std::fs::read_dir(&paths.icon_cache_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -208,5 +214,55 @@ fn clear_icon_db_cache(paths: &ThemePaths) -> io::Result<()> {
             "failed to clear icon cache entries: {}",
             failures.join("; ")
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn test_paths(root: &Path) -> ThemePaths {
+        ThemePaths {
+            system_root: root.join("Windows"),
+            staging_root: root.join("staging"),
+            wallpaper_dir: root.join("wallpaper"),
+            icon_root: root.join("Users/Icon"),
+            cursor_root: root.join("Windows/Cursors/Edgeless"),
+            desktop_roots: Vec::new(),
+            icon_cache_dir: root.join("cache"),
+        }
+    }
+
+    fn test_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("eli-theme-refresh-{label}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn missing_icon_cache_directory_is_already_invalidated() {
+        let root = test_root("missing-cache");
+        let paths = test_paths(&root);
+
+        assert!(clear_icon_db_cache(&paths).is_ok());
+        assert!(!paths.icon_cache_dir.exists());
+    }
+
+    #[test]
+    fn clears_only_first_level_regular_db_files() {
+        let root = test_root("precise-cache");
+        let paths = test_paths(&root);
+        let nested = paths.icon_cache_dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(paths.icon_cache_dir.join("iconcache.db"), b"cache").unwrap();
+        std::fs::write(paths.icon_cache_dir.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(nested.join("nested.db"), b"nested").unwrap();
+
+        clear_icon_db_cache(&paths).unwrap();
+
+        assert!(!paths.icon_cache_dir.join("iconcache.db").exists());
+        assert!(paths.icon_cache_dir.join("keep.txt").exists());
+        assert!(nested.join("nested.db").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
