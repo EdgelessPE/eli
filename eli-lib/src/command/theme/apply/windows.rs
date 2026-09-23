@@ -24,6 +24,7 @@ use super::{CursorSnapshot, RegistryValueSnapshot, ThemeBackend, ThemePaths};
 const THEME_APPLY_MUTEX_NAME: &str = "Local\\Edgeless.Eli.ThemeApply";
 const THEME_APPLY_WAIT_MILLIS: u32 = 60_000;
 const SHELL_WAIT_MILLIS: u32 = 60_000;
+const SHELL_AUTO_RESTART_GRACE_MILLIS: u32 = 5_000;
 
 pub struct WindowsThemeBackend<'a> {
     ctx: &'a Ctx,
@@ -179,7 +180,7 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
     fn execute_esc(&self, script: &Path) -> io::Result<()> {
         run_process_checked(
             &self.pecmd()?,
-            &[OsString::from("LOAD"), OsString::from(script)],
+            &[OsString::from("LOAD"), pecmd_compatible_path(script)],
             &system_work_directory(),
             Duration::from_secs(60),
         )
@@ -533,6 +534,35 @@ fn push_unique_windows_path(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
         .any(|root| super::transaction::case_fold(&root.to_string_lossy()) == folded)
     {
         roots.push(candidate);
+    }
+}
+
+/// PECMD 2012 不识别 `std::fs::canonicalize` 返回的 `\\?\` 扩展路径，
+/// 并且会在未加载脚本时仍返回成功。调用外部 PECMD 前转换为等价的普通绝对
+/// 路径；UNC 路径同时恢复为双反斜杠形式。
+fn pecmd_compatible_path(path: &Path) -> OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let verbatim = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    let verbatim_unc = [
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    if wide.starts_with(&verbatim_unc) {
+        let mut compatible = vec![b'\\' as u16, b'\\' as u16];
+        compatible.extend_from_slice(&wide[verbatim_unc.len()..]);
+        OsString::from_wide(&compatible)
+    } else if wide.starts_with(&verbatim) {
+        OsString::from_wide(&wide[verbatim.len()..])
+    } else {
+        path.as_os_str().to_owned()
     }
 }
 
@@ -1112,34 +1142,99 @@ fn stop_shell_impl() -> io::Result<()> {
         OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
 
-    let pid = shell_window_pid()?;
-    if pid == 0 {
-        return Ok(());
-    }
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
-    if handle.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let terminated = unsafe { TerminateProcess(handle, 0) };
-    if terminated == 0 {
-        let error = io::Error::last_os_error();
+    let pids = explorer_process_ids_in_current_session()?;
+    let mut failures = Vec::new();
+    for pid in pids {
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            failures.push(format!(
+                "failed to open Explorer process {pid}: {}",
+                io::Error::last_os_error()
+            ));
+            continue;
+        }
+        let terminated = unsafe { TerminateProcess(handle, 0) };
+        if terminated == 0 {
+            failures.push(format!(
+                "failed to terminate Explorer process {pid}: {}",
+                io::Error::last_os_error()
+            ));
+        } else {
+            let wait_status = unsafe { WaitForSingleObject(handle, 15_000) };
+            if wait_status != WAIT_OBJECT_0 {
+                failures.push(format!(
+                    "Explorer process {pid} did not exit within the time limit"
+                ));
+            }
+        }
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(handle);
         }
-        return Err(error);
     }
-    let wait_status = unsafe { WaitForSingleObject(handle, 15_000) };
-    unsafe {
-        windows_sys::Win32::Foundation::CloseHandle(handle);
-    }
-    if wait_status == WAIT_OBJECT_0 {
+    if failures.is_empty() {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Explorer did not exit within the time limit",
-        ))
+        Err(io::Error::other(failures.join("; ")))
     }
+}
+
+/// 枚举当前会话中的全部 Explorer 进程。只依赖 Shell_TrayWnd 会漏掉 Winlogon
+/// 刚拉起、尚未创建任务栏窗口但已经打开图标缓存的 Explorer。
+fn explorer_process_ids_in_current_session() -> io::Result<Vec<u32>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::EqualSid;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+
+    let session = session_of_current_process()?;
+    let current_sid =
+        process_user_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() })?;
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut pids = Vec::new();
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let name_end = entry
+            .szExeFile
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = OsString::from_wide(&entry.szExeFile[..name_end]);
+        if name.to_string_lossy().eq_ignore_ascii_case("explorer.exe") {
+            let mut process_session = 0u32;
+            let found_session =
+                unsafe { ProcessIdToSessionId(entry.th32ProcessID, &mut process_session) } != 0;
+            if found_session
+                && process_session == session
+                && let Ok(process_sid) = process_user_sid(entry.th32ProcessID)
+            {
+                let same_user = unsafe {
+                    EqualSid(
+                        current_sid.as_ptr() as *mut core::ffi::c_void,
+                        process_sid.as_ptr() as *mut core::ffi::c_void,
+                    )
+                } != 0;
+                if same_user {
+                    pids.push(entry.th32ProcessID);
+                }
+            }
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    Ok(pids)
 }
 
 fn start_shell_impl() -> io::Result<()> {
@@ -1147,7 +1242,15 @@ fn start_shell_impl() -> io::Result<()> {
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    // Winlogon 会异步自动拉起 Explorer。先给它一个短暂恢复窗口，避免检查
+    // 与自动启动之间的竞态：多启动的 explorer.exe 会被已有 Shell 解释为
+    // “打开此电脑”，并在多次主题应用后不断堆积窗口。
+    if wait_for_shell_window(std::time::Duration::from_millis(
+        SHELL_AUTO_RESTART_GRACE_MILLIS as u64,
+    ))? {
+        return Ok(());
+    }
 
     let explorer = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
@@ -1185,24 +1288,37 @@ fn start_shell_impl() -> io::Result<()> {
         windows_sys::Win32::Foundation::CloseHandle(information.hThread);
         windows_sys::Win32::Foundation::CloseHandle(information.hProcess);
     }
-    // 等待桌面窗口就绪（Shell_TrayWnd 出现）。
-    let class = "Shell_TrayWnd"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
+    if wait_for_shell_window(std::time::Duration::from_millis(SHELL_WAIT_MILLIS as u64))? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Explorer was started but the desktop window did not become ready in time",
+        ))
+    }
+}
+
+/// 在限定时间内等待当前会话的 Shell 窗口出现。
+fn wait_for_shell_window(timeout: std::time::Duration) -> io::Result<bool> {
+    wait_for_shell_window_with(timeout, std::time::Duration::from_millis(100), || {
+        Ok(shell_window_pid()? != 0)
+    })
+}
+
+fn wait_for_shell_window_with(
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
+    mut probe: impl FnMut() -> io::Result<bool>,
+) -> io::Result<bool> {
     let started = std::time::Instant::now();
     loop {
-        let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
-        if !window.is_null() {
-            return Ok(());
+        if probe()? {
+            return Ok(true);
         }
-        if started.elapsed() >= std::time::Duration::from_millis(SHELL_WAIT_MILLIS as u64) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Explorer was started but the desktop window did not become ready in time",
-            ));
+        if started.elapsed() >= timeout {
+            return Ok(false);
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(interval);
     }
 }
 
@@ -1554,6 +1670,48 @@ mod tests {
                 .unwrap_err();
         assert!(error.to_string().contains("replace failed"));
         assert!(error.to_string().contains("also failed"));
+    }
+
+    #[test]
+    fn pecmd_paths_drop_the_unsupported_verbatim_prefix() {
+        assert_eq!(
+            pecmd_compatible_path(Path::new(r"\\?\C:\Edgeless\firpe ep\StartIsBackConfig.esc")),
+            OsString::from(r"C:\Edgeless\firpe ep\StartIsBackConfig.esc")
+        );
+        assert_eq!(
+            pecmd_compatible_path(Path::new(r"\\?\UNC\server\share\config.esc")),
+            OsString::from(r"\\server\share\config.esc")
+        );
+        assert_eq!(
+            pecmd_compatible_path(Path::new(r"X:\Theme\config.esc")),
+            OsString::from(r"X:\Theme\config.esc")
+        );
+    }
+
+    #[test]
+    fn shell_wait_uses_an_existing_auto_restarted_shell_without_launching_early() {
+        let mut probes = 0;
+        let ready = wait_for_shell_window_with(Duration::from_secs(1), Duration::ZERO, || {
+            probes += 1;
+            Ok(probes == 3)
+        })
+        .unwrap();
+
+        assert!(ready);
+        assert_eq!(probes, 3);
+    }
+
+    #[test]
+    fn shell_wait_times_out_when_auto_restart_never_appears() {
+        let mut probes = 0;
+        let ready = wait_for_shell_window_with(Duration::ZERO, Duration::ZERO, || {
+            probes += 1;
+            Ok(false)
+        })
+        .unwrap();
+
+        assert!(!ready);
+        assert_eq!(probes, 1);
     }
 
     #[test]

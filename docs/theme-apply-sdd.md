@@ -467,8 +467,8 @@ ESS 是本命令中唯一需要强文件事务和 Shell 生命周期保证的组
 3. 先使用当前权限尝试同卷原子 replace。只有明确收到访问拒绝等权限错误时，才读取目标安全描述符并通过 Win32 安全 API 临时取得最低必要写权限；正常可写路径不额外修改 ACL，也不调用 `takeown.exe` 或 `icacls.exe`。
 4. 分别替换 `imageres.dll` 和 `imagesp1.dll`，每次 replace 后检查文件大小/哈希与预检产物一致。第二个文件失败时必须恢复第一个文件，保证两个资源 DLL 始终来自同一版本。
 5. 如果本次临时修改过安全描述符，无论成功失败都恢复目标原安全描述符。
-6. 在当前 Shell 用户的 `AppData\Local\Microsoft\Windows\Explorer` 缓存目录中删除第一层普通 `*.db` 文件；不得递归、不得越出该精确目录。
-7. 成功或回滚完成后，由统一刷新阶段启动 Explorer 并等待桌面就绪。若计划中同时有 ESC 的重启请求，这次启动已经满足该请求，不再追加第二次重启。
+6. 在当前 Shell 用户的 `AppData\Local\Microsoft\Windows\Explorer` 缓存目录中删除第一层普通 `*.db` 文件；不得递归、不得越出该精确目录。若 Winlogon 已自动拉起新的 Explorer 并重新占用缓存，则再次停止该 Shell 后重试删除。
+7. 成功或回滚完成后，由统一刷新阶段恢复 Explorer 并等待桌面就绪。恢复时先等待 Winlogon 自动拉起 Shell；只有宽限期内仍没有 `Shell_TrayWnd` 才主动启动 `explorer.exe`，避免两者竞态使多余进程被解释为“打开此电脑”。若计划中同时有 ESC 的重启请求，这次恢复已经满足该请求，不再追加第二次重启。
 
 既然 Explorer 会在本刷新阶段重启，ESS 正常路径不再在停止 Explorer 前额外发送一次随后立刻失效的 `SHCNE_ASSOCCHANGED`。如果未来实机验证表明某个特定系统版本仍需要额外通知，应作为兼容补丁加入，而不是默认复制旧批处理步骤。
 
@@ -491,7 +491,7 @@ ESS 是本命令中唯一需要强文件事务和 Shell 生命周期保证的组
 - 工作目录固定为 `%SystemRoot%\System32`，与旧应用路径一致。
 - 同步等待退出，设置统一超时，捕获退出码和标准错误。
 - 非零退出、超时或无法启动均为组件失败。
-- 成功后只向 `RefreshPlan` 提交 `ExplorerRestart` 请求，不立即自行重启 Explorer；独立 `.esc` 因没有其他组件，最终仍表现为执行结束前重启一次 Explorer。
+- ESC 在 Explorer 仍运行时通过 PECMD 同步写入配置，成功后向 `RefreshPlan` 请求一次强制 Explorer 重启。强制结束旧 Shell 不给 StartIsBack 正常退出回写旧配置的机会；同时避免“先停止、后写入”期间被 Winlogon 自动拉起的新 Explorer 抢先加载旧值。独立 `.esc` 最终仍表现为执行结束前重启一次 Explorer。
 
 `theme apply` 不执行 `Intro.wcs`。ESC 本身是规范允许的可执行配置载荷，无法在不完整实现 PECMD 的情况下证明其只含注册表命令；因此把“显式调用 apply”视为运行该主题配置的授权，并在错误汇总中标记 ESC 为不可自动回滚组件。
 ## 15. `.jpg` 壁纸
@@ -502,7 +502,7 @@ ESS 是本命令中唯一需要强文件事务和 Shell 生命周期保证的组
 pecmd.exe WALL <会话稳定路径的绝对 JPEG 路径>
 ```
 
-PECMD 绝对路径由依赖管理模块提供，参数直接传给进程而不经过 `cmd.exe /c`，工作目录为 `%SystemRoot%\System32`。不能直接引用 `.eth` staging 中即将删除的图片，应先复制到会话稳定路径；替换前记录旧会话文件，PECMD 启动失败、超时或非零退出时恢复旧文件。成功后不额外重启 Explorer。
+PECMD 绝对路径由依赖管理模块提供，参数直接传给进程而不经过 `cmd.exe /c`，工作目录为 `%SystemRoot%\System32`。PECMD 2012 不识别 Windows `\\?\` 扩展路径且可能静默返回成功，因此传入脚本路径前必须把 canonical 路径转换为等价的普通盘符路径或 UNC 路径。不能直接引用 `.eth` staging 中即将删除的图片，应先复制到会话稳定路径；替换前记录旧会话文件，PECMD 启动失败、超时或非零退出时恢复旧文件。成功后不额外重启 Explorer。
 
 ## 16. Shell 刷新策略
 

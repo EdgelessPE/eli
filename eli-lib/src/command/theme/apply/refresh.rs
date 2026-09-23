@@ -19,6 +19,8 @@ pub enum RefreshRequest {
     CursorReload,
     ShortcutNotify(PathBuf),
     IconCacheInvalidate,
+    #[allow(dead_code)]
+    // 预留：无专用提交动作、只需重启 Explorer 的未来组件/测试使用。
     ExplorerRestart,
     /// ESS 双 DLL 替换需要在 Explorer 停止期间执行。
     SystemIconReplacement(EssCommit),
@@ -32,6 +34,15 @@ pub struct RefreshPlan {
     icon_cache_invalidate: bool,
     explorer_restart: bool,
     ess: Option<EssCommit>,
+}
+
+/// 刷新阶段结果：组件动作错误与 Shell 生命周期错误分开返回，便于编排器把
+/// 失败准确归属到 ESC、ESS 或两者，而不是把部分成功误报为全部成功。
+#[derive(Debug, Default)]
+pub struct RefreshExecution {
+    pub executed: ExecutedRefresh,
+    pub ess_error: Option<io::Error>,
+    pub lifecycle_error: Option<io::Error>,
 }
 
 impl RefreshPlan {
@@ -51,94 +62,86 @@ impl RefreshPlan {
 
     /// 执行最小化后的刷新动作。
     ///
-    /// `on_ess` 由编排器提供，负责在 Explorer 停止期间执行 ESS 双 DLL 替换；
-    /// 其返回值会决定 ESS 组件的最终状态。无论 ESS 成功与否，已停止的
-    /// Explorer 都会在 finally 路径恢复。返回的第二个值表示刷新阶段是否
-    /// 整体失败（例如 ESS 替换失败或 Shell 恢复失败）；即使失败，第一个值
-    /// 仍携带实际执行的刷新动作供汇总使用。
+    /// ESS 在 Explorer 停止后提交；无论组件成功与否，已停止的 Explorer
+    /// 都会在 finally 路径恢复。组件错误和 Shell 生命周期错误分开返回，
+    /// 避免组合主题中一个组件失败时污染另一个组件的结果。
     pub fn execute_minimal(
         &self,
         backend: &dyn ThemeBackend,
         paths: &ThemePaths,
-        on_ess: &mut dyn FnMut(&EssCommit) -> io::Result<()>,
-    ) -> (ExecutedRefresh, io::Result<()>) {
-        let mut executed = ExecutedRefresh::default();
+    ) -> RefreshExecution {
+        let mut result = RefreshExecution::default();
         let restart_needed = self.explorer_restart || self.ess.is_some();
         let shell_was_running = if restart_needed {
             match backend.shell_is_running() {
                 Ok(running) => running,
                 Err(error) => {
-                    return (
-                        executed,
-                        Err(io::Error::new(
-                            error.kind(),
-                            format!("failed to inspect Explorer before the refresh phase: {error}"),
-                        )),
-                    );
+                    result.lifecycle_error = Some(io::Error::new(
+                        error.kind(),
+                        format!("failed to inspect Explorer before the refresh phase: {error}"),
+                    ));
+                    return result;
                 }
             }
         } else {
             false
         };
-        let mut failure: Option<String> = None;
 
         if shell_was_running && let Err(error) = backend.stop_shell() {
-            return (
-                executed,
-                Err(io::Error::new(
-                    error.kind(),
-                    format!("failed to stop Explorer for the refresh phase: {error}"),
-                )),
-            );
+            result.lifecycle_error = Some(io::Error::new(
+                error.kind(),
+                format!("failed to stop Explorer for the refresh phase: {error}"),
+            ));
+            return result;
         }
 
         if restart_needed {
-            let mut ess_failed = false;
             if let Some(commit) = &self.ess {
-                match on_ess(commit) {
+                match commit.replace(backend) {
                     Ok(()) => {
                         if self.icon_cache_invalidate {
-                            match clear_icon_db_cache(paths) {
-                                Ok(()) => executed.icon_cache_invalidated = true,
-                                Err(error) => executed.warnings.push(error.to_string()),
+                            match clear_icon_db_cache_resilient(backend, paths) {
+                                Ok(()) => result.executed.icon_cache_invalidated = true,
+                                Err(error) => result.executed.warnings.push(error.to_string()),
                             }
                         }
                     }
                     Err(error) => {
-                        ess_failed = true;
-                        executed
+                        result
+                            .executed
                             .warnings
                             .push(format!("ESS replacement failed: {error}"));
+                        result.ess_error = Some(error);
                     }
                 }
             } else if self.icon_cache_invalidate {
-                match clear_icon_db_cache(paths) {
-                    Ok(()) => executed.icon_cache_invalidated = true,
-                    Err(error) => executed.warnings.push(error.to_string()),
+                match clear_icon_db_cache_resilient(backend, paths) {
+                    Ok(()) => result.executed.icon_cache_invalidated = true,
+                    Err(error) => result.executed.warnings.push(error.to_string()),
                 }
             }
 
             if shell_was_running {
                 match backend.start_shell() {
-                    Ok(()) => executed.explorer_restarted = true,
+                    Ok(()) => result.executed.explorer_restarted = true,
                     Err(error) => {
-                        failure = Some(format!(
-                            "theme resources were committed but Explorer recovery failed: {error}"
+                        result.lifecycle_error = Some(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "theme resources were committed but Explorer recovery failed: {error}"
+                            ),
                         ));
                     }
                 }
-            }
-
-            if ess_failed && failure.is_none() {
-                failure = Some("ESS replacement failed and rolled back".to_owned());
             }
         }
 
         // 不会重启 Explorer 时，才对成功修改的快捷方式发送定点通知。
         if !restart_needed && !self.shortcut_notify.is_empty() {
             match backend.notify_shortcuts(&self.shortcut_notify) {
-                Ok(()) => executed.shortcut_notified = self.shortcut_notify.len(),
-                Err(error) => executed
+                Ok(()) => result.executed.shortcut_notified = self.shortcut_notify.len(),
+                Err(error) => result
+                    .executed
                     .warnings
                     .push(format!("shortcut notifications failed: {error}")),
             }
@@ -146,21 +149,53 @@ impl RefreshPlan {
 
         if self.cursor_reload {
             match backend.refresh_cursors() {
-                Ok(()) => executed.cursors_refreshed = true,
+                Ok(()) => result.executed.cursors_refreshed = true,
                 Err(error) => {
-                    executed
+                    result
+                        .executed
                         .warnings
                         .push(format!("cursor reload failed: {error}"));
                 }
             }
         }
 
-        if let Some(message) = failure {
-            (executed, Err(io::Error::other(message)))
-        } else {
-            (executed, Ok(()))
+        result
+    }
+}
+
+/// Explorer 被强制结束后可能被 Winlogon 很快拉起，并重新占用图标缓存。第一次
+/// 删除遇到共享访问拒绝时，再停止一次新出现的 Shell 并重试；正常路径不增加
+/// 额外的 Shell 操作。
+fn clear_icon_db_cache_resilient(backend: &dyn ThemeBackend, paths: &ThemePaths) -> io::Result<()> {
+    let mut first_error = None;
+    for _ in 0..4 {
+        match clear_icon_db_cache(paths) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                if first_error.is_none() {
+                    first_error = Some(error.to_string());
+                }
+                backend.stop_shell().map_err(|stop_error| {
+                    io::Error::new(
+                        stop_error.kind(),
+                        format!(
+                            "failed to clear the icon cache ({}); stopping the automatically restarted Explorer also failed: {stop_error}",
+                            first_error.as_deref().unwrap_or("access denied")
+                        ),
+                    )
+                })?;
+            }
+            Err(error) => return Err(error),
         }
     }
+    let final_error = clear_icon_db_cache(paths).unwrap_err();
+    Err(io::Error::new(
+        final_error.kind(),
+        format!(
+            "failed to clear the icon cache after repeatedly stopping automatically restarted Explorer processes: first attempt: {}; final attempt: {final_error}",
+            first_error.as_deref().unwrap_or("access denied")
+        ),
+    ))
 }
 
 /// 在精确图标缓存目录第一层删除普通 `*.db` 文件；不得递归、不得越界。
@@ -178,6 +213,7 @@ fn clear_icon_db_cache(paths: &ThemePaths) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     let mut failures = Vec::new();
+    let mut permission_denied = false;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
@@ -204,16 +240,24 @@ fn clear_icon_db_cache(paths: &ThemePaths) -> io::Result<()> {
             continue;
         }
         if let Err(error) = std::fs::remove_file(entry.path()) {
+            permission_denied |= error.kind() == io::ErrorKind::PermissionDenied;
             failures.push(format!("{}: {error}", entry.path().display()));
         }
     }
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(io::Error::other(format!(
-            "failed to clear icon cache entries: {}",
-            failures.join("; ")
-        )))
+        Err(io::Error::new(
+            if permission_denied {
+                io::ErrorKind::PermissionDenied
+            } else {
+                io::ErrorKind::Other
+            },
+            format!(
+                "failed to clear icon cache entries: {}",
+                failures.join("; ")
+            ),
+        ))
     }
 }
 

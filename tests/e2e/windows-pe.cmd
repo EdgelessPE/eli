@@ -138,8 +138,8 @@ if errorlevel 1 (
     set "RESULT=1"
 )
 
-rem 最小 ESC：PECMD LOAD 应成功，并触发一次 Explorer 重启。
-> "%THEME_DIR%\minimal.esc" echo EXIT
+rem 最小 ESC：先写入标记，再强制重启 Explorer，标记必须保留。
+> "%THEME_DIR%\minimal.esc" echo REGI #HKCU\Software\Edgeless\EliThemeE2E\\EscApplied=1
 "%ELI%" theme apply "%THEME_DIR%\minimal.esc" >"%STDOUT%" 2>"%STDERR%"
 if not "%ERRORLEVEL%"=="0" (
     echo Minimal ESC theme apply should succeed. 1>&2
@@ -154,6 +154,11 @@ if errorlevel 1 (
 findstr /c:"explorer restarted" "%STDOUT%" >nul
 if errorlevel 1 (
     echo Minimal ESC did not restart Explorer exactly once. 1>&2
+    set "RESULT=1"
+)
+reg query HKCU\Software\Edgeless\EliThemeE2E /v EscApplied 2>nul | findstr /i /c:"0x1" >nul
+if errorlevel 1 (
+    echo ESC registry marker did not survive the Explorer restart. 1>&2
     set "RESULT=1"
 )
 set "THEME_LOG=%SystemDrive%\Users\Theme\eli\theme-apply.log"
@@ -365,6 +370,7 @@ if errorlevel 1 (
 )
 
 :theme_done
+reg delete HKCU\Software\Edgeless\EliThemeE2E /f >nul 2>nul
 
 :cleanup
 rd /s /q "%TEST_ROOT%" 2>nul

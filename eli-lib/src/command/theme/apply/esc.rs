@@ -8,13 +8,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::ThemeBackend;
-use super::refresh::{RefreshPlan, RefreshRequest};
 
 /// ESC 脚本的合理最大文件大小。
 pub const ESC_MAX_SIZE: u64 = 8 << 20;
 
 /// ESC 预检结果。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedEsc {
     /// 稳定绝对脚本路径。
     pub script: PathBuf,
@@ -100,13 +99,10 @@ pub fn prepare_esc(script: &Path) -> io::Result<PreparedEsc> {
     Ok(PreparedEsc { script })
 }
 
-/// 提交 ESC：通过 PECMD LOAD 同步执行；非零退出/超时/无法启动均为组件失败，
-/// 且不承诺通用回滚。
-pub fn commit_esc(
-    prepared: &PreparedEsc,
-    backend: &dyn ThemeBackend,
-    refresh: &mut RefreshPlan,
-) -> io::Result<()> {
+/// 提交 ESC：通过 PECMD LOAD 同步执行。调用方随后必须强制重启 Explorer，
+/// 使旧 Shell 不经正常退出回写配置，并让新 Shell 读取刚写入的注册表值。
+/// 非零退出、超时或无法启动均为组件失败，且不承诺通用回滚。
+pub fn commit_esc(prepared: &PreparedEsc, backend: &dyn ThemeBackend) -> io::Result<()> {
     backend.execute_esc(&prepared.script).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -115,9 +111,7 @@ pub fn commit_esc(
                 prepared.script.display()
             ),
         )
-    })?;
-    refresh.request(RefreshRequest::ExplorerRestart);
-    Ok(())
+    })
 }
 
 #[cfg(test)]

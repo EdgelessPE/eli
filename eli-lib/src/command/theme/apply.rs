@@ -551,7 +551,10 @@ fn commit_prepared(
         None
     };
 
-    // ESS 需要在统一刷新阶段（Explorer 停止期间）执行双 DLL 替换。
+    // ESC 在 Explorer 仍运行时提交，随后由统一刷新阶段强制结束旧 Shell；
+    // ESS 则需要在 Shell 停止期间替换 DLL。这样可避免 Winlogon 在 ESC 写入
+    // 期间自动拉起 Explorer，并让新进程抢先加载旧的 StartIsBack 配置。
+    let mut pending_esc: Option<usize> = None;
     let mut pending_ess: Option<usize> = None;
 
     for component in &prepared.components {
@@ -641,12 +644,16 @@ fn commit_prepared(
                 }
             }
             PreparedComponent::StartIsBackConfig(esc) => {
-                match details::esc::commit_esc(esc, backend, &mut refresh_plan) {
-                    Ok(()) => ComponentOutcome {
-                        component: ThemeComponent::StartIsBackConfig,
-                        status: ComponentStatus::Applied,
-                        windows_error_code: None,
-                    },
+                match details::esc::commit_esc(esc, backend) {
+                    Ok(()) => {
+                        pending_esc = Some(summary.components.len());
+                        refresh_plan.request(RefreshRequest::ExplorerRestart);
+                        ComponentOutcome {
+                            component: ThemeComponent::StartIsBackConfig,
+                            status: ComponentStatus::Applied,
+                            windows_error_code: None,
+                        }
+                    }
                     Err(error) => ComponentOutcome {
                         component: ThemeComponent::StartIsBackConfig,
                         status: ComponentStatus::Failed(error.to_string()),
@@ -691,78 +698,63 @@ fn commit_prepared(
     }
 
     // 统一最小刷新。
-    let mut ess_error: Option<(String, Option<i32>)> = None;
-    let (executed, refresh_result) =
-        refresh_plan.execute_minimal(
-            backend,
-            paths,
-            &mut |commit| match commit.replace(backend) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    let message = error.to_string();
-                    ess_error = Some((message.clone(), error.raw_os_error()));
-                    Err(io::Error::new(error.kind(), message))
-                }
-            },
-        );
-    summary.refresh = executed;
+    let refresh_execution = refresh_plan.execute_minimal(backend, paths);
+    let ess_error = refresh_execution
+        .ess_error
+        .map(|error| (error.to_string(), error.raw_os_error()));
+    let lifecycle_error = refresh_execution
+        .lifecycle_error
+        .map(|error| (error.to_string(), error.raw_os_error()));
+    summary.refresh = refresh_execution.executed;
     summary.refresh.cursors_refreshed |= cursors_refreshed;
 
-    // 汇总 ESS 结果与整体刷新失败。
-    let mut refresh_failure: Option<(String, Option<i32>)> = None;
-    if let Err(error) = refresh_result {
-        refresh_failure = Some((error.to_string(), error.raw_os_error()));
-    }
-    if let Some(index) = pending_ess {
-        let failure_attr = match (ess_error, refresh_failure) {
-            (Some((ess_error, ess_code)), Some((refresh_error, refresh_code))) => Some((
-                format!(
-                    "system icon DLL replacement failed and was rolled back: {ess_error}; the refresh phase also failed: {refresh_error}"
-                ),
-                ess_code.or(refresh_code),
-            )),
-            (Some((ess_error, ess_code)), None) => Some((
-                format!("system icon DLL replacement failed and was rolled back: {ess_error}"),
-                ess_code,
-            )),
-            (None, Some((refresh_error, refresh_code))) => Some((
-                format!("system icon apply refresh phase failed: {refresh_error}"),
-                refresh_code,
-            )),
-            (None, None) => None,
-        };
-        if let Some((message, error_code)) = failure_attr {
+    // 组件提交错误和 Shell 生命周期错误分别归属，组合主题中 ESC/ESS 互不
+    // 覆盖结果；Shell 无法停止或恢复时，两者都必须明确报告失败。
+    if let Some(index) = pending_esc {
+        let failure = lifecycle_error
+            .as_ref()
+            .map(|(lifecycle_error, lifecycle_code)| {
+                (
+                    format!("start menu configuration refresh phase failed: {lifecycle_error}"),
+                    *lifecycle_code,
+                )
+            });
+        if let Some((message, error_code)) = failure {
             summary.components[index].status = ComponentStatus::Failed(message);
             summary.components[index].windows_error_code = error_code;
         }
-    } else if let Some((refresh_error, refresh_error_code)) = refresh_failure {
-        // 没有 ESS 时，刷新阶段失败归属到请求 Explorer 重启的组件（ESC），
-        // 以“部分成功错误”标记（资源已提交但 Shell 恢复失败）。
-        let message =
-            format!("theme resources were committed but Explorer recovery failed: {refresh_error}");
-        for outcome in summary.components.iter_mut().rev() {
-            if outcome.component != ThemeComponent::StartIsBackConfig {
-                continue;
-            }
-            match &outcome.status {
-                ComponentStatus::Applied => {
-                    outcome.status = ComponentStatus::Failed(message.clone());
-                    outcome.windows_error_code = refresh_error_code;
-                }
-                ComponentStatus::AppliedWithWarnings(_) => {
-                    let mut warnings =
-                        match std::mem::replace(&mut outcome.status, ComponentStatus::Applied) {
-                            ComponentStatus::AppliedWithWarnings(warnings) => warnings,
-                            _ => unreachable!(),
-                        };
-                    warnings.push(message.clone());
-                    outcome.status = ComponentStatus::Failed(warnings.join("; "));
-                    outcome.windows_error_code = refresh_error_code;
-                }
-                _ => {}
-            }
-            break;
+    }
+
+    if let Some(index) = pending_ess {
+        let failure = match (&ess_error, &lifecycle_error) {
+            (Some((ess_error, ess_code)), Some((lifecycle_error, lifecycle_code))) => Some((
+                format!(
+                    "system icon DLL replacement failed and was rolled back: {ess_error}; the refresh phase also failed: {lifecycle_error}"
+                ),
+                ess_code.or(*lifecycle_code),
+            )),
+            (Some((ess_error, ess_code)), None) => Some((
+                format!("system icon DLL replacement failed and was rolled back: {ess_error}"),
+                *ess_code,
+            )),
+            (None, Some((lifecycle_error, lifecycle_code))) => Some((
+                format!("system icon apply refresh phase failed: {lifecycle_error}"),
+                *lifecycle_code,
+            )),
+            (None, None) => None,
+        };
+        if let Some((message, error_code)) = failure {
+            summary.components[index].status = ComponentStatus::Failed(message);
+            summary.components[index].windows_error_code = error_code;
         }
+    }
+    if pending_esc.is_none()
+        && pending_ess.is_none()
+        && let Some((error, _)) = lifecycle_error
+    {
+        summary
+            .warnings
+            .push(format!("theme refresh phase failed: {error}"));
     }
 
     if let Some(log) = event_log.as_mut() {
@@ -1445,13 +1437,13 @@ mod tests {
         plan.request(RefreshRequest::ShortcutNotify(root.join("App2.lnk")));
         plan.request(RefreshRequest::SystemIconReplacement(ess_commit_for(&root)));
 
-        let (executed, refresh_result) =
-            plan.execute_minimal(&backend, &backend.paths.clone(), &mut |_| Ok(()));
+        let refresh = plan.execute_minimal(&backend, &backend.paths.clone());
 
-        assert!(refresh_result.is_ok());
-        assert!(executed.explorer_restarted);
-        assert!(executed.icon_cache_invalidated);
-        assert_eq!(executed.shortcut_notified, 0);
+        assert!(refresh.lifecycle_error.is_none());
+        assert!(refresh.ess_error.is_none());
+        assert!(refresh.executed.explorer_restarted);
+        assert!(refresh.executed.icon_cache_invalidated);
+        assert_eq!(refresh.executed.shortcut_notified, 0);
         let state = backend.state.lock().unwrap();
         assert_eq!(state.shell_events, vec!["stop", "start"]);
         drop(state);
@@ -1468,12 +1460,11 @@ mod tests {
         plan.request(RefreshRequest::ExplorerRestart);
         plan.request(RefreshRequest::IconCacheInvalidate);
 
-        let (executed, refresh_result) =
-            plan.execute_minimal(&backend, &backend.paths.clone(), &mut |_| unreachable!());
+        let refresh = plan.execute_minimal(&backend, &backend.paths.clone());
 
-        assert!(refresh_result.is_ok());
-        assert!(!executed.icon_cache_invalidated);
-        assert!(!executed.warnings.is_empty());
+        assert!(refresh.lifecycle_error.is_none());
+        assert!(!refresh.executed.icon_cache_invalidated);
+        assert!(!refresh.executed.warnings.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1485,13 +1476,12 @@ mod tests {
         plan.request(RefreshRequest::ShortcutNotify(root.join("App1.lnk")));
         plan.request(RefreshRequest::ShortcutNotify(root.join("App2.lnk")));
 
-        let (executed, refresh_result) =
-            plan.execute_minimal(&backend, &backend.paths.clone(), &mut |_| unreachable!());
+        let refresh = plan.execute_minimal(&backend, &backend.paths.clone());
 
-        assert!(refresh_result.is_ok());
-        assert!(!executed.explorer_restarted);
-        assert_eq!(executed.shortcut_notified, 2);
-        assert!(!executed.icon_cache_invalidated);
+        assert!(refresh.lifecycle_error.is_none());
+        assert!(!refresh.executed.explorer_restarted);
+        assert_eq!(refresh.executed.shortcut_notified, 2);
+        assert!(!refresh.executed.icon_cache_invalidated);
         let state = backend.state.lock().unwrap();
         assert!(state.shell_events.is_empty());
         drop(state);
@@ -1507,12 +1497,11 @@ mod tests {
         plan.request(RefreshRequest::ExplorerRestart);
         plan.request(RefreshRequest::CursorReload);
 
-        let (executed, refresh_result) =
-            plan.execute_minimal(&backend, &backend.paths.clone(), &mut |_| unreachable!());
+        let refresh = plan.execute_minimal(&backend, &backend.paths.clone());
 
-        assert!(refresh_result.is_ok());
-        assert!(executed.explorer_restarted);
-        assert!(executed.cursors_refreshed);
+        assert!(refresh.lifecycle_error.is_none());
+        assert!(refresh.executed.explorer_restarted);
+        assert!(refresh.executed.cursors_refreshed);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1528,13 +1517,11 @@ mod tests {
         std::fs::remove_file(commit.imagesp1_source()).unwrap();
         plan.request(RefreshRequest::SystemIconReplacement(commit));
 
-        let (executed, refresh_result) =
-            plan.execute_minimal(&backend, &backend.paths.clone(), &mut |commit| {
-                commit.replace(&backend)
-            });
+        let refresh = plan.execute_minimal(&backend, &backend.paths.clone());
 
-        assert!(refresh_result.is_err());
-        assert!(executed.explorer_restarted);
+        assert!(refresh.ess_error.is_some());
+        assert!(refresh.lifecycle_error.is_none());
+        assert!(refresh.executed.explorer_restarted);
         let system32 = backend.paths.system_root.join("System32");
         assert_eq!(
             std::fs::read(system32.join("imageres.dll")).unwrap(),
@@ -1544,6 +1531,63 @@ mod tests {
             std::fs::read(system32.join("imagesp1.dll")).unwrap(),
             b"old-imagesp1"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn esc_runs_before_explorer_is_force_restarted() {
+        let root = test_root();
+        let backend = FakeBackend::new(root.clone());
+        backend.state.lock().unwrap().shell_running = true;
+        let script = root.join("config.esc");
+        std::fs::write(&script, b"REGI #HKCU\\Software\\EliTest\\\\Value=1").unwrap();
+
+        let summary = apply_with_backend(&script, ThemeType::Esc, &backend).unwrap();
+
+        assert_eq!(summary.failed(), 0);
+        let state = backend.state.lock().unwrap();
+        let stop = state
+            .log
+            .iter()
+            .position(|event| event == "stop_shell")
+            .unwrap();
+        let esc = state
+            .log
+            .iter()
+            .position(|event| event == "execute_esc")
+            .unwrap();
+        let start = state
+            .log
+            .iter()
+            .position(|event| event == "start_shell")
+            .unwrap();
+        assert!(esc < stop && stop < start);
+        drop(state);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn esc_failure_is_reported_without_restarting_explorer() {
+        let root = test_root();
+        let backend = FakeBackend::new(root.clone());
+        let package = root.join("broken.esc");
+        std::fs::write(&package, b"REGI #HKCU\\Software\\EliTest\\\\Value=1").unwrap();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.shell_running = true;
+            state.fail_esc = true;
+        }
+
+        let summary = apply_with_backend(&package, ThemeType::Esc, &backend).unwrap();
+
+        assert_eq!(summary.failed(), 1);
+        assert!(matches!(
+            summary.components[0].status,
+            ComponentStatus::Failed(_)
+        ));
+        let state = backend.state.lock().unwrap();
+        assert!(state.shell_events.is_empty());
+        drop(state);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
