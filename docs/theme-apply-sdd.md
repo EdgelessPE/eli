@@ -1,15 +1,17 @@
-# `eli theme apply` 软件设计文档（SDD）
+# `eli theme apply` 与启动集成软件设计文档（SDD）
 
 ## 1. 文档状态
 
-- 状态：待评审（重构提效策略、EdgelessRuntime、ELS 与 ESC 策略已确认）
-- 目标命令：`eli theme apply`
+- 状态：待评审（重构提效策略、EdgelessRuntime、ELS、ESC 与 `theme startup` 两阶段接口已确认）
+- 目标命令：`eli theme apply`、`eli theme startup`、`eli theme startup --reconcile`
 - 实现范围：仅 Windows PE 运行时
 - 本文档只定义设计，不包含实现代码
 
 ## 2. 背景与现状
 
 `eli theme apply` 用于替代旧版 `setTheme.cmd` 的“应用到当前 PE 会话”能力。命令接收一个主题包、资源包或壁纸文件，根据扩展名自动选择处理逻辑，不再要求调用方额外传入 `eth`、`eis`、`ems` 等类型参数。
+
+`eli theme startup` 用于替代旧版 `Pecmd.ini` 中分散的 `autoESS`、`auto` 和最终桌面图标补扫逻辑。启动主题采用“Explorer 启动前应用 + 插件快捷方式创建后对账”的两阶段接口；两个阶段复用 `theme apply` 的组件实现、事务策略和主题全局互斥体，但具有独立的启动时序契约。
 
 本设计参考了以下材料：
 
@@ -89,7 +91,7 @@
 | `procLoadScreen.wcs` | `setTheme.cmd els` 只为 `LOGO` 预览解包三张图片 | ELS 预览不属于 `theme apply` |
 | `instTheme.cmd` | ELS 写入启动盘 `Edgeless\Default\LoadScreen`，壁纸写入启动盘默认位置 | 持久化统一留给未来 `theme store` |
 | 原版 `Pecmd.ini` | 在三个启动节点以 `LS_INDEX=0/1/2` 调用 `Edgeless_LoadScreen`；文件缺失时不切换画面 | Store 迁移保留帧顺序和“缺帧维持上一画面”语义 |
-| 原版 `Pecmd.ini` | `setTheme.cmd auto` 后仍会创建系统快捷方式，`EdgelessExit` 最后再次运行 `setDesktopIcon.exe` | 记录为旧启动流程事实；本 SDD 只定义 `theme apply` 自身的即时图标更新，不冻结未来 Loader 或其他命令的调用时机 |
+| 原版 `Pecmd.ini` | `setTheme.cmd auto` 后仍会创建系统快捷方式，`EdgelessExit` 最后再次运行 `setDesktopIcon.exe` | `theme apply` 不承担后续补扫；第 23 节由 `theme startup --reconcile` 接管这一启动期最终一致性行为 |
 | FirPE 示例 `.eth` | 六类组件齐全，但 ELS 只有 `load0.jpg`，ESC 为 UTF-16，EMS 含 15 类光标文件 | 验收必须覆盖单帧 ELS 跳过、UTF-16 ESC 透传和 15 槽 EMS |
 | 鼠标刷新讨论记录 | 旧调用 `call_dll('user32.dll','SystemParametersInfoW',0x57,0,0,2)` 中 `0x57` 即 `SPI_SETCURSORS`、`2` 即 `SPIF_SENDCHANGE`；风险点是调用前注册表配置是否已完整就绪 | 使用同步注册表写入、检查 Win32 返回值并关闭句柄，再以具名常量调用 `SPI_SETCURSORS`；不靠固定延时，也不把全量二次读回当作正常路径屏障 |
 
@@ -122,7 +124,7 @@
 1. 通过一个明确的路径参数自动识别并应用 `.eth`、`.eis`、`.ems`、`.esc`、`.ess`、`.els` 和 `.jpg`。
 2. 在任何副作用前验证当前环境为 `WindowsPE` 且满足 `EdgelessRuntime` 防迁移门禁，并通过条件编译保证 Windows、Linux、macOS 均可构建。
 3. 统一使用依赖管理模块解析和探测 `7z.exe`、`pecmd.exe`，不硬编码安装路径。
-4. 对组合主题执行完整预检，尽量在修改系统前发现损坏包、危险归档条目或缺失资源；纯读取、解码和校验允许有限并行。
+4. 对组合主题执行完整预检，尽量在修改系统前发现损坏包、危险归档条目或缺失资源；纯读取、解码和校验按规范组件顺序串行完成。
 5. 直接在 Rust 中实现 EIS 的桌面快捷方式图标替换，不再调用 `setDesktopIcon.exe`，并按图标映射定点查找候选 `.lnk`，避免全桌面扫描。
 6. 修复 EMS 应用时序：同步写入光标配置、检查 Win32 写入结果、关闭句柄后调用 `SPI_SETCURSORS`，不通过固定延时、控制面板和模拟按键完成刷新；同时支持规范中的 `Pin`/`Person` 可选槽位。
 7. 识别旧式 ELS，打印迁移警告并明确跳过；`apply` 不解压、不转换、不发布启动画面资源。
@@ -141,7 +143,7 @@
 - 支持 `.jpeg`、`.png` 作为独立壁纸入口；首版保持旧规范的 `.jpg` 接口。
 - 对正在运行的 LoadScreen 强制播放预览动画。
 - 跨整个 `.eth` 提供绝对原子性。`.esc` 是交给 PECMD 的兼容脚本载荷，无法可靠撤销其全部副作用。
-- 在本 SDD 中定义 `theme store`、ELS→LSBP 迁移或未来 Loader 的具体调用时序；这些职责由各自设计单独确定。
+- 在本 SDD 中定义 `theme store` 或 ELS→LSBP 迁移；这些职责仍由各自设计单独确定。`theme startup` 的最小启动集成和调用时序在第 23 节定义。
 
 ## 5. CLI 设计
 
@@ -174,7 +176,16 @@ eli theme apply "D:\Themes\WallPaper.jpg"
 
 成功时输出逐组件结果和一行总计；警告写入标准错误流。任何错误都必须包含外层源路径、组件类型和失败阶段。退出码保持简单：全部成功为 `0`，发生任何失败为非零。
 
-`--bootdisk` 对本命令没有作用，因为本命令不修改启动盘。未来的持久化功能设计为独立的 `eli theme store`，并遵守多启动盘候选时必须显式选择目标的规则。
+`--bootdisk` 对 `theme apply` 没有作用，因为该命令不修改启动盘。未来的持久化功能设计为独立的 `eli theme store`，并遵守多启动盘候选时必须显式选择目标的规则。
+
+### 5.1 启动主题入口
+
+```text
+eli theme startup
+eli theme startup --reconcile
+```
+
+两个命令行形式属于同一个启动主题命令的不同阶段，不再增加独立的 `theme reconcile` 子命令。无 `--reconcile` 时必须在 Explorer 首次启动前执行；带 `--reconcile` 时必须在插件和系统快捷方式创建完成后执行。详细职责、幂等语义和调用顺序见第 23 节。
 
 ## 6. 总体架构
 
@@ -324,7 +335,7 @@ EMS 光标资源发布到 `%SystemRoot%\Cursors\Edgeless\<唯一 ID>\`。锁不�
 
 `.eth` 根目录只识别规范组件名。组件名采用 ASCII 大小写不敏感匹配，但同一规范名出现多个大小写变体时必须拒绝。`Intro.txt`、`Intro.wcs` 和 `Intro/` 可存在但不进入应用计划；其他未知根条目打印警告并忽略。嵌套资源包仍要按自身规则独立预检。
 
-组合主题必须在任何系统副作用之前完成所有**可应用组件**的预检，包括嵌套 EIS/EMS/ESS 归档、图片解码、DLL PE 头、鼠标文件集合和 PECMD 依赖。嵌套 ELS 只在外层归档清单中识别并记录为 `Skipped`，不解压也不校验其内部图片。彼此独立的纯读取、解码和校验允许使用有界并行，但外部 7-Zip 进程数量必须受控，避免为了并行反而重复扫描或解压同一归档。
+组合主题必须在任何系统副作用之前完成所有**可应用组件**的预检，包括嵌套 EIS/EMS/ESS 归档、图片解码、DLL PE 头、鼠标文件集合和 PECMD 依赖。嵌套 ELS 只在外层归档清单中识别并记录为 `Skipped`，不解压也不校验其内部图片。首版按规范组件顺序串行完成读取、解码和校验，避免为体量较小且负载不均衡的主题资源引入额外进程启动、I/O 竞争和并发错误汇总复杂度。
 
 ## 9. `.eth` 组合主题编排
 
@@ -346,7 +357,7 @@ EMS 光标资源发布到 `%SystemRoot%\Cursors\Edgeless\<唯一 ID>\`。锁不�
 5. 若最终需要 Explorer 重启，EIS 的普通快捷方式变更通知由该重启覆盖；否则对实际修改成功的 `.lnk` 发送定点 Shell 通知。
 6. EMS 的 `SPI_SETCURSORS` 不由 Explorer 重启替代，成功写入光标配置后必须执行一次明确的光标刷新。
 
-因此 `.eth` 同时包含 ESS 与 ESC 时最多只需要一次 Explorer 停止/启动周期，而不是复刻旧批处理中两次重启的中间状态。准备阶段允许有界并行；系统状态提交和统一刷新仍在主题全局 named mutex 内串行完成。
+因此 `.eth` 同时包含 ESS 与 ESC 时最多只需要一次 Explorer 停止/启动周期，而不是复刻旧批处理中两次重启的中间状态。准备、系统状态提交和统一刷新均按确定顺序串行完成；主题全局 named mutex 继续防止其他线程或进程交叉提交。
 
 某个组件提交失败时，按该组件自己的事务等级处理后继续执行不依赖它的后续组件，并在最终汇总中准确记录 `Applied`、`AppliedWithWarnings`、`Skipped` 和 `Failed`。ESC 不参与跨组件伪事务；ESS 失败必须恢复旧 DLL 并保证 Explorer 最终可用。错误信息必须明确说明主题可能已部分应用。
 ## 10. `.ems` 鼠标样式
@@ -528,7 +539,7 @@ Shell 刷新由统一 `RefreshPlan` 管理，不再要求各组件按旧批处�
 因此 `.eth` 同时包含 ESS 和 ESC 时只执行一次安全 Explorer 重启。重启必须等待桌面窗口就绪并设置明确超时；超时返回“资源已提交但 Shell 恢复失败”的部分成功错误。
 ## 17. 并发、锁和失败语义
 
-主题资源共享 HKCU、系统 DLL、光标目录和桌面快捷方式，因此系统状态提交和统一刷新阶段不并行。纯预检与解码可以在锁外有界并行，获得全局锁后对会依赖当前系统状态的目标重新确认必要前提。
+主题资源共享 HKCU、系统 DLL、光标目录和桌面快捷方式，因此准备、系统状态提交和统一刷新均不并行。纯预检与解码仍可在锁外完成，但首版按确定顺序串行执行；获得全局锁后对会依赖当前系统状态的目标重新确认必要前提。
 
 ### 17.1 全局 named mutex
 
@@ -656,6 +667,19 @@ FirPE 示例只用于本地兼容性验收，不提交到仓库，避免引入�
 5. ESS 与 ESC 共存时最终效果正确且 Explorer 只经历一次安全重启。
 6. ESS 应用失败不会留下不一致的两个 DLL 或无 Explorer 的桌面。
 7. 非 Edgeless Windows PE 即使具备 7-Zip、PECMD 和相同目录布局，也会被 `EdgelessRuntime` 防迁移门禁拒绝。
+
+### 19.7 `theme startup` 测试
+
+- CLI 必须接受 `eli theme startup` 和 `eli theme startup --reconcile`，不得额外暴露独立的 `theme reconcile` 子命令。
+- 首阶段在 Explorer 未运行时应用 ESS、ESC、EMS、壁纸和 EIS，且不会调用停止、启动或重启 Explorer 的后端能力。
+- 首阶段发现当前会话 Explorer 已运行时，在任何主题副作用前返回明确的启动阶段前置条件错误，不得把它静默退化为一次热应用。
+- 首阶段发布 EIS 图标资源，并能修改调用时已经存在的桌面快捷方式。
+- 对账阶段不得读取启动盘、列出或解压主题归档，也不得重新执行 ESS、ESC、EMS、壁纸或 ELS 处理器。
+- 在首阶段之后新建一个与 `shortcut/*.ico` 匹配的 `.lnk`，再执行对账阶段，验证该链接获得已发布图标并收到定点 Shell 通知。
+- 连续执行两次对账必须得到相同最终状态；第二次没有变更时成功返回，不重启 Explorer。
+- 会话中没有已发布的 EIS 快捷方式资源时，对账阶段作为无操作成功，不把“没有可对账资源”报告为错误。
+- `theme apply`、`theme startup` 和 `theme startup --reconcile` 必须竞争同一个 Windows named mutex；并发测试不得出现图标发布、快捷方式写入或 ESS 提交交错。
+- Windows PE E2E 脚本放在 `tests/e2e/`；Linux、macOS 和普通 Windows 验证命令在副作用前返回明确的环境不支持错误。
 ## 20. 依赖与构建影响
 
 Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known Folder、named mutex 和安全 API 对应 feature，优先避免再引入另一套 `windows` crate。7-Zip 和 PECMD 仍是外部运行时依赖，由现有中台集中注册。
@@ -666,7 +690,7 @@ Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known 
 ## 21. 分阶段实现建议
 
 1. 建立 CLI、公开入口、类型识别、`WindowsPE` + `EdgelessRuntime` 防迁移检查、named mutex 和 fake backend 测试。
-2. 实现统一安全归档层及 `.eth` 完整预检/应用计划；同一归档最小化 7-Zip 进程调用，并为纯校验加入有界并行。
+2. 实现统一安全归档层及 `.eth` 完整预检/应用计划；同一归档最小化 7-Zip 进程调用，组件准备按规范顺序串行执行。
 3. 实现 ELS 的稳定告警/跳过语义；不引入 LoadScreen 转换、Store 或 Loader 契约代码。
 4. 实现 EMS 15 基础 + `Pin`/`Person` 可选槽位、唯一方案 ID、注册表当前进程回滚和 `SPI_SETCURSORS` 刷新。
 5. 实现 EIS 图标原子发布、Known Folder 根目录解析、ICO→LNK 定点匹配和 per-link best effort Shell Link 修改。
@@ -674,8 +698,10 @@ Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known 
 7. 实现 `RefreshPlan`，覆盖快捷方式通知、光标刷新、图标缓存失效和 Explorer 最小重启聚合。
 8. 实现 ESS 双文件强事务、按需 ACL 提升、Shell-off 替换、精确缓存清理，并接入统一刷新阶段。
 9. 补齐 Windows PE E2E、故障注入、多进程 named mutex 和 FirPE 样包实机验收。
+10. 实现 `theme startup` 首阶段：从当前启动盘默认主题构建统一应用计划，在 Explorer 启动前提交可用组件，并把 EIS 图标发布为会话稳定状态。
+11. 实现 `theme startup --reconcile`：只消费已发布的 EIS 快捷方式图标，对插件和系统后续创建的 `.lnk` 做幂等对账及定点刷新。
 
-`theme store`、ELS→LSBP 持久化迁移以及未来 Loader 的调用时序均单独立项，不纳入以上阶段。
+`theme store` 与 ELS→LSBP 持久化迁移仍单独立项；启动主题的最小调用时序按第 23 节实现。
 ## 22. 已确认设计决策
 
 本轮评审已确认以下边界，后续实现不得自行改变：
@@ -690,3 +716,90 @@ Windows 目标需要在现有 `windows-sys` 依赖上补齐 COM、Shell、Known 
 8. EIS 按 `shortcut/*.ico` 定点寻找 `.lnk`，快捷方式修改采用 per-link best effort；单个坏链接不回滚其他成功结果，不再保存后重复 Load 验证。
 9. ESS 采用双 DLL 强事务和 Shell finally 保证；ACL 只在现有权限不足时临时调整，不维护跨主题永久原始 DLL 备份。
 10. 主题提交使用 Windows named mutex 做同进程/多进程互斥；不使用锁文件，也不为非关键会话资源维护跨进程 crash-recovery journal。
+11. 启动主题只暴露 `eli theme startup` 和 `eli theme startup --reconcile`；不增加独立的 `theme reconcile` 子命令。
+12. `theme startup` 首阶段在 Explorer 启动前应用运行时主题；`--reconcile` 只负责插件和系统后续创建快捷方式的 EIS 图标对账，不重复应用其他主题组件。
+13. `--reconcile` 必须幂等；不存在已发布 EIS 资源或没有待修改快捷方式时均作为无操作成功。
+
+## 23. `eli theme startup` 两阶段启动设计
+
+### 23.1 目标和边界
+
+`theme startup` 接管旧版 `Pecmd.ini` 中以下三类启动主题行为：
+
+- Explorer 启动前的 `setTheme.cmd autoESS`。
+- 插件加载后执行的 `setTheme.cmd auto`。
+- 插件和内置快捷方式创建完成后的 `setDesktopIcon.exe` 补扫。
+
+新实现不再按旧脚本位置机械拆分 ESS 与其他运行时主题，而是以真实依赖划分为“预 Shell 应用”和“后置快捷方式对账”两个阶段。命令只读取当前上下文已经选择的启动盘默认主题，不修改启动盘；主题持久化仍属于未来 `theme store`。两个阶段都仅支持 `WindowsPE` + `EdgelessRuntime`，平台特定实现通过条件编译隔离。
+
+ELS 不属于本命令的运行时应用计划。LoadScreen 帧在 Explorer 启动前更早的 `load0/load1/load2` 节点已经被消费，必须由启动画面加载器或未来 ELS→LSBP 迁移流程处理，不能在 `theme startup` 中补播或重新配置。
+
+### 23.2 首阶段：`eli theme startup`
+
+首阶段必须在当前会话 Explorer 首次启动前调用，职责如下：
+
+1. 通过统一启动盘发现和全局 `--bootdisk` 上下文确定默认主题来源；命令自身不再按 Windows 盘符遍历磁盘。
+2. 读取默认壁纸以及 `Edgeless\Default` 中存在的 EIS、EMS、ESC 和 ESS，完成与 `theme apply` 相同的环境、依赖、归档和组件预检。
+3. 先完成全部可应用组件的准备，再获取与 `theme apply` 共用的主题 named mutex，串行提交系统状态。
+4. 应用壁纸、EMS 和 ESC，发布 EIS 图标资源，并对当前已经存在的快捷方式执行一次定点匹配。
+5. 在 Explorer 尚未运行时提交 ESS 双 DLL 事务并清理存在的旧图标缓存；不为了主题主动启动 Explorer。
+6. 不发送没有消费者的 Shell 快捷方式通知，也不执行 Explorer 停止、启动或重启。
+
+启动脚本负责把该命令放在正确节点，命令本身仍必须检查当前会话 Shell 状态。若 Explorer 已经运行，首阶段应在任何主题副作用前返回明确的前置条件错误，避免调用位置错误被静默解释成一次会终止用户桌面的热应用。需要在已启动桌面中应用主题时应使用 `eli theme apply`。
+
+各组件在首阶段的契约如下：
+
+| 组件 | 首阶段行为 | 原因 |
+| --- | --- | --- |
+| ESS | 应用 | 系统资源 DLL 应在 Explorer 首次加载前替换，避免文件占用和额外 Shell 重启 |
+| ESC | 应用 | StartIsBack 在首次启动时直接读取新配置；执行前必须确保当前用户 hive 已准备完成 |
+| EMS | 应用 | 注册表写入和 `SPI_SETCURSORS` 不依赖 Explorer |
+| 壁纸 | 应用 | 通过 PECMD `WALL` 建立当前会话壁纸状态，Explorer 启动后直接显示 |
+| EIS | 发布资源并匹配已有链接 | 图标资源可提前发布，但只能修改此时已经存在的 `.lnk` |
+| ELS | 不处理 | 它属于更早的启动画面消费阶段 |
+
+### 23.3 对账阶段：`eli theme startup --reconcile`
+
+对账阶段在插件加载完成、系统和插件快捷方式都已创建后调用。它不是第二次主题应用，职责必须限制为：
+
+1. 直接读取首阶段已经发布到会话稳定图标根目录中的 `shortcut/*.ico`，将其视为期望状态。
+2. 按 EIS 的 Windows 大小写不敏感规则，为当前用户桌面、公共桌面和 Edgeless 兼容桌面构造同名 `.lnk` 候选。
+3. 只对尚未使用期望图标的现有链接调用 Shell Link COM 写入；单链接失败继续其他链接并汇总为警告。
+4. Explorer 已运行时，仅对实际修改成功的链接发送定点 `SHCNE_UPDATEITEM`/flush 通知；不得重启 Explorer。
+
+对账阶段明确禁止：
+
+- 再次发现或读取启动盘主题源。
+- 列出、解压或重新预检 `.eth/.eis` 归档。
+- 重新应用 ESS、ESC、EMS、壁纸或 ELS。
+- 创建旧式 `Path/*.txt`、`DelayRefresh`、`NoESSTip` 等脚本间传参标记。
+
+已发布的会话图标目录本身就是对账所需的持久期望状态，不额外创建只用于两个命令调用之间传参的临时文件。没有已发布的 `shortcut/*.ico`、没有对应链接或全部链接已经一致时，命令返回成功并报告零变更。该阶段必须幂等，可以在插件重载或启动恢复后安全重试。
+
+### 23.4 调用顺序
+
+启动流程固定为：
+
+```text
+发现并选择启动盘
+    ↓
+准备当前用户 hive 和主题运行环境
+    ↓
+eli theme startup
+    ↓
+启动 Explorer
+    ↓
+加载 LocalBoost、普通插件并创建系统/插件快捷方式
+    ↓
+eli theme startup --reconcile
+```
+
+如果未来能够证明所有快捷方式生产者都可以在 Explorer 前安全完成，可以移除后置调用；在当前插件启动时序下不得假设这一条件成立。
+
+### 23.5 互斥、失败和结果汇总
+
+两个启动阶段与 `theme apply` 修改相同的 HKCU、系统资源 DLL、会话图标目录和桌面快捷方式，因此必须共用同一个 Windows named mutex。首阶段的预检在锁外按确定顺序串行完成，提交时重新确认 Explorer 尚未启动；对账阶段在锁内重新枚举候选链接，避免使用获取锁前已经过期的桌面快照。内部不并发准备或提交多个主题组件。
+
+首阶段沿用各组件既有事务等级：ESS 保持双 DLL 强回滚，EMS 保持当前进程内配置回滚，EIS 按链接 best effort，ESC 保持外部不可通用回滚。某个非依赖组件失败时继续其他可独立组件并输出结构化汇总，但命令不得因失败启动 Explorer；后续是否继续启动桌面由启动脚本根据汇总和既有恢复策略决定。
+
+对账阶段只产生 EIS 统计和警告：至少报告已检查、已修改、未找到、已一致和失败的链接数量。零变更为成功；系统性 COM 初始化失败或无法访问全部桌面根目录时返回失败。所有实现不得引入跨进程共享临时清单，异常退出后的恢复方式是安全地重新执行 `--reconcile`。
