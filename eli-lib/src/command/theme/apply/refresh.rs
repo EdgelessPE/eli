@@ -60,6 +60,11 @@ impl RefreshPlan {
         }
     }
 
+    /// Explorer 尚未启动时丢弃没有消费者的快捷方式通知。
+    pub fn discard_shortcut_notifications(&mut self) {
+        self.shortcut_notify.clear();
+    }
+
     /// 执行最小化后的刷新动作。
     ///
     /// ESS 在 Explorer 停止后提交；无论组件成功与否，已停止的 Explorer
@@ -69,6 +74,24 @@ impl RefreshPlan {
         &self,
         backend: &dyn ThemeBackend,
         paths: &ThemePaths,
+    ) -> RefreshExecution {
+        self.execute(backend, paths, true)
+    }
+
+    /// 启动首阶段执行刷新计划，但绝不停止或启动 Explorer。
+    pub fn execute_startup(
+        &self,
+        backend: &dyn ThemeBackend,
+        paths: &ThemePaths,
+    ) -> RefreshExecution {
+        self.execute(backend, paths, false)
+    }
+
+    fn execute(
+        &self,
+        backend: &dyn ThemeBackend,
+        paths: &ThemePaths,
+        allow_shell_lifecycle: bool,
     ) -> RefreshExecution {
         let mut result = RefreshExecution::default();
         let restart_needed = self.explorer_restart || self.ess.is_some();
@@ -87,12 +110,21 @@ impl RefreshPlan {
             false
         };
 
-        if shell_was_running && let Err(error) = backend.stop_shell() {
-            result.lifecycle_error = Some(io::Error::new(
-                error.kind(),
-                format!("failed to stop Explorer for the refresh phase: {error}"),
-            ));
-            return result;
+        if shell_was_running {
+            if !allow_shell_lifecycle {
+                result.lifecycle_error = Some(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Explorer started before startup theme resources were committed; refusing to stop it",
+                ));
+                return result;
+            }
+            if let Err(error) = backend.stop_shell() {
+                result.lifecycle_error = Some(io::Error::new(
+                    error.kind(),
+                    format!("failed to stop Explorer for the refresh phase: {error}"),
+                ));
+                return result;
+            }
         }
 
         if restart_needed {
@@ -121,7 +153,7 @@ impl RefreshPlan {
                 }
             }
 
-            if shell_was_running {
+            if shell_was_running && allow_shell_lifecycle {
                 match backend.start_shell() {
                     Ok(()) => result.executed.explorer_restarted = true,
                     Err(error) => {
@@ -266,7 +298,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::command::theme::apply::test_support::test_root;
+    use crate::command::theme::apply::test_support::{FakeBackend, test_root};
 
     fn test_paths(root: &Path) -> ThemePaths {
         ThemePaths {
@@ -305,5 +337,21 @@ mod tests {
         assert!(paths.icon_cache_dir.join("keep.txt").exists());
         assert!(nested.join("nested.db").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_refresh_refuses_to_stop_an_explorer_that_appeared_late() {
+        let root = test_root("startup-late-shell");
+        let backend = FakeBackend::new(root.join("volume"));
+        backend.state.lock().unwrap().shell_running = true;
+        let mut plan = RefreshPlan::default();
+        plan.request(RefreshRequest::ExplorerRestart);
+
+        let execution = plan.execute_startup(&backend, &backend.paths);
+
+        assert!(execution.lifecycle_error.is_some());
+        let state = backend.state.lock().unwrap();
+        assert!(state.shell_events.is_empty());
+        assert!(state.shell_running);
     }
 }

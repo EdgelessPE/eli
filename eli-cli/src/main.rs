@@ -64,7 +64,7 @@ enum Command {
         #[command(subcommand)]
         command: NesPakCommand,
     },
-    /// Apply theme packages to the current Edgeless PE session.
+    /// Apply and reconcile themes in the current Edgeless PE session.
     #[cfg(feature = "theme-apply")]
     Theme {
         #[command(subcommand)]
@@ -111,6 +111,32 @@ mod tests {
             Command::Theme {
                 command: ThemeCommand::Apply { package }
             } if package == Path::new("D:\\Themes\\Sample.eth")
+        ));
+    }
+
+    #[cfg(feature = "theme-apply")]
+    #[test]
+    fn parses_theme_startup_without_reconcile() {
+        let cli = Cli::try_parse_from(["eli", "theme", "startup"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Theme {
+                command: ThemeCommand::Startup { reconcile: false }
+            }
+        ));
+    }
+
+    #[cfg(feature = "theme-apply")]
+    #[test]
+    fn parses_theme_startup_reconcile() {
+        let cli = Cli::try_parse_from(["eli", "theme", "startup", "--reconcile"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Theme {
+                command: ThemeCommand::Startup { reconcile: true }
+            }
         ));
     }
 

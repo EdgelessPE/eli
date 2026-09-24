@@ -115,9 +115,9 @@ unsafe fn vtable<T>(interface: *mut core::ffi::c_void) -> &'static T {
     unsafe { &**(interface as *mut *const T) }
 }
 
-pub(super) fn set_icon_locations(
+pub(super) fn reconcile_icon_locations(
     changes: &[(PathBuf, PathBuf)],
-) -> io::Result<Vec<io::Result<()>>> {
+) -> io::Result<Vec<io::Result<bool>>> {
     let changes = changes.to_vec();
     std::thread::Builder::new()
         .name("eli-shell-link-sta".to_owned())
@@ -132,7 +132,7 @@ pub(super) fn set_icon_locations(
         .map_err(|_| io::Error::other("Shell Link STA worker panicked"))?
 }
 
-fn set_icon_location_in_apartment(link: &Path, icon: &Path) -> io::Result<()> {
+fn set_icon_location_in_apartment(link: &Path, icon: &Path) -> io::Result<bool> {
     let mut shell_link: *mut core::ffi::c_void = ptr::null_mut();
     let hr = unsafe {
         windows_sys::Win32::System::Com::CoCreateInstance(
@@ -179,6 +179,41 @@ fn set_icon_location_in_apartment(link: &Path, icon: &Path) -> io::Result<()> {
                 hr,
             ));
         }
+        let mut current_icon = vec![0u16; 32_768];
+        let mut current_index = -1;
+        let hr = unsafe {
+            (shell_vtable.get_icon_location)(
+                shell_link,
+                current_icon.as_mut_ptr(),
+                current_icon.len() as u32,
+                &mut current_index,
+            )
+        };
+        if hr < 0 {
+            return Err(hresult_error(
+                &format!("IShellLinkW::GetIconLocation for {}", link.display()),
+                hr,
+            ));
+        }
+        let current_length = current_icon
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(current_icon.len());
+        let desired_length = icon_wide.len().saturating_sub(1);
+        let icon_matches = current_length <= i32::MAX as usize
+            && desired_length <= i32::MAX as usize
+            && unsafe {
+                windows_sys::Win32::Globalization::CompareStringOrdinal(
+                    current_icon.as_ptr(),
+                    current_length as i32,
+                    icon_wide.as_ptr(),
+                    desired_length as i32,
+                    1,
+                )
+            } == windows_sys::Win32::Globalization::CSTR_EQUAL;
+        if current_index == 0 && icon_matches {
+            return Ok(false);
+        }
         let hr = unsafe { (shell_vtable.set_icon_location)(shell_link, icon_wide.as_ptr(), 0) };
         if hr < 0 {
             return Err(hresult_error(
@@ -193,7 +228,7 @@ fn set_icon_location_in_apartment(link: &Path, icon: &Path) -> io::Result<()> {
                 hr,
             ));
         }
-        Ok(())
+        Ok(true)
     })();
 
     unsafe {
@@ -296,11 +331,18 @@ mod tests {
             }
         }
 
-        super::set_icon_locations(&[(link.clone(), icon.clone())])
+        let changed = super::reconcile_icon_locations(&[(link.clone(), icon.clone())])
             .unwrap()
             .pop()
             .unwrap()
             .unwrap();
+        assert!(changed);
+        let changed_again = super::reconcile_icon_locations(&[(link.clone(), icon.clone())])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
+        assert!(!changed_again);
 
         {
             let _apartment = ComApartment::initialize_sta().unwrap();

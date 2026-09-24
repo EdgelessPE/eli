@@ -8,7 +8,7 @@
 #[cfg(any(windows, test))]
 pub(super) mod archive;
 #[cfg(any(windows, test))]
-pub(super) mod eis;
+pub(in crate::command::theme) mod eis;
 #[cfg(any(windows, test))]
 pub(super) mod ems;
 #[cfg(any(windows, test))]
@@ -18,7 +18,7 @@ pub(super) mod ess;
 #[cfg(any(windows, test))]
 pub(super) mod event_log;
 #[cfg(any(windows, test))]
-pub(super) mod refresh;
+pub(in crate::command::theme) mod refresh;
 #[cfg(test)]
 pub mod test_support;
 #[cfg(any(windows, test))]
@@ -26,7 +26,7 @@ pub(super) mod transaction;
 #[cfg(any(windows, test))]
 pub(super) mod wallpaper;
 #[cfg(windows)]
-pub(super) mod windows;
+pub(in crate::command::theme) mod windows;
 
 #[cfg(any(windows, test))]
 use std::io;
@@ -105,8 +105,12 @@ pub struct ComponentOutcome {
 /// EIS 快捷方式修改统计。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EisStats {
+    /// 已检查且找到对应 `.lnk` 的数量。
+    pub checked: usize,
     /// 成功修改的 `.lnk` 数量。
     pub updated: usize,
+    /// 图标位置已经正确、无需写回的 `.lnk` 数量。
+    pub unchanged: usize,
     /// 未找到对应 `.lnk` 的图标数量。
     pub not_found: usize,
     /// 修改失败的 `.lnk` 数量。
@@ -277,7 +281,7 @@ pub trait ThemeBackend: Send + Sync {
     fn modify_shortcut_icons(
         &self,
         changes: &[(PathBuf, PathBuf)],
-    ) -> io::Result<Vec<io::Result<()>>>;
+    ) -> io::Result<Vec<io::Result<bool>>>;
     /// 对成功修改的 .lnk 发送定点 Shell 通知。
     fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()>;
     /// 当前会话是否正在运行 Explorer。

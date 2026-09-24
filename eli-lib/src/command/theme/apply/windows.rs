@@ -358,8 +358,8 @@ impl ThemeBackend for WindowsThemeBackend<'_> {
     fn modify_shortcut_icons(
         &self,
         changes: &[(PathBuf, PathBuf)],
-    ) -> io::Result<Vec<io::Result<()>>> {
-        crate::shell::desktop_icon::set_icon_locations(changes)
+    ) -> io::Result<Vec<io::Result<bool>>> {
+        crate::shell::desktop_icon::reconcile_icon_locations(changes)
     }
 
     fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()> {

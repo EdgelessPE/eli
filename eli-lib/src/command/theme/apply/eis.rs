@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use super::archive::{EIS_LIMITS, validate_listing, verify_extraction};
 use super::refresh::RefreshPlan;
-use super::transaction::{case_fold, ensure_safe_publish_path};
+use super::transaction::{
+    case_fold, ensure_existing_directory_not_reparse, ensure_safe_publish_path,
+};
 use super::{EisStats, ThemeBackend, ThemePaths};
 
 /// 可发布的静态图片扩展名（与 image crate 当前启用的解码器一致）。
@@ -208,19 +210,113 @@ pub fn commit_eis(
         })?;
     }
 
+    let mappings = prepared
+        .shortcut_icons
+        .iter()
+        .map(|(stem, _source, relative)| (stem.clone(), paths.icon_root.join(relative)))
+        .collect::<Vec<_>>();
+    apply_shortcut_mappings(&mappings, backend, paths, refresh)
+}
+
+/// 使用会话稳定目录中已发布的 `shortcut/*.ico` 对账快捷方式。
+/// 不解包、不复制图标；返回值末项是发现的图标数量。
+pub fn reconcile_published_shortcuts(
+    backend: &dyn ThemeBackend,
+    paths: &ThemePaths,
+    refresh: &mut RefreshPlan,
+) -> io::Result<(EisStats, Vec<String>, usize)> {
+    let shortcut_dir = paths.icon_root.join("shortcut");
+    match std::fs::symlink_metadata(&shortcut_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "published shortcut icon path is not a safe directory: {}",
+                    shortcut_dir.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok((EisStats::default(), Vec::new(), 0));
+        }
+        Err(error) => return Err(error),
+    }
+    ensure_existing_directory_not_reparse(&shortcut_dir)?;
+
+    let mut entries = std::fs::read_dir(&shortcut_dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_unstable_by_key(|entry| entry.file_name());
+    let mut mappings = Vec::new();
+    let mut stems = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ico"))
+        {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() || file_type.is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "published shortcut icon is not a regular file: {}",
+                    path.display()
+                ),
+            ));
+        }
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let folded = case_fold(&stem);
+        if stems.iter().any(|existing| existing == &folded) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("published shortcut icons contain a duplicate name: {stem}"),
+            ));
+        }
+        stems.push(folded);
+        mappings.push((stem, path));
+    }
+    let icon_count = mappings.len();
+    let (stats, failures) = apply_shortcut_mappings(&mappings, backend, paths, refresh)?;
+    Ok((stats, failures, icon_count))
+}
+
+fn apply_shortcut_mappings(
+    mappings: &[(String, PathBuf)],
+    backend: &dyn ThemeBackend,
+    paths: &ThemePaths,
+    refresh: &mut RefreshPlan,
+) -> io::Result<(EisStats, Vec<String>)> {
+    if !mappings.is_empty()
+        && !paths.desktop_roots.iter().any(|root| {
+            std::fs::symlink_metadata(root)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "published shortcut icons exist, but no current, public, or Edgeless compatibility desktop directory is available",
+        ));
+    }
     let mut stats = EisStats::default();
     let mut failures = Vec::new();
     let mut changes = Vec::new();
-    for (stem, _source, relative) in &prepared.shortcut_icons {
+    for (stem, icon) in mappings {
         let links = find_links_by_stem(paths, stem)?;
         if links.is_empty() {
             stats.not_found += 1;
             continue;
         }
-        let icon = paths.icon_root.join(relative);
         for link in links {
             changes.push((link, icon.clone()));
         }
+    }
+    if changes.is_empty() {
+        return Ok((stats, failures));
     }
     let results = backend.modify_shortcut_icons(&changes)?;
     if results.len() != changes.len() {
@@ -232,11 +328,13 @@ pub fn commit_eis(
     }
     let mut notified = Vec::new();
     for ((link, _), result) in changes.into_iter().zip(results) {
+        stats.checked += 1;
         match result {
-            Ok(()) => {
+            Ok(true) => {
                 stats.updated += 1;
                 notified.push(link);
             }
+            Ok(false) => stats.unchanged += 1,
             Err(error) => {
                 stats.failed += 1;
                 failures.push(format!(

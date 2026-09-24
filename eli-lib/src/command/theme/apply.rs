@@ -5,7 +5,7 @@
 // ApplySummary”。所有系统副作用集中在提交与刷新阶段；预检只读解包/解码/校验。
 
 #[path = "apply/mod.rs"]
-mod details;
+pub(super) mod details;
 
 use crate::Ctx;
 use crate::dependency::{RuntimeCapability, RuntimeEnvironment};
@@ -119,6 +119,19 @@ fn outer_component_name(kind: ThemeType) -> &'static str {
 }
 
 #[cfg(any(windows, test))]
+fn standalone_component(kind: ThemeType) -> Option<ThemeComponent> {
+    match kind {
+        ThemeType::Eth => None,
+        ThemeType::Eis => Some(ThemeComponent::IconPack),
+        ThemeType::Ems => Some(ThemeComponent::MouseStyle),
+        ThemeType::Esc => Some(ThemeComponent::StartIsBackConfig),
+        ThemeType::Ess => Some(ThemeComponent::SystemIconPack),
+        ThemeType::Els => Some(ThemeComponent::LoadScreen),
+        ThemeType::Jpg => Some(ThemeComponent::Wallpaper),
+    }
+}
+
+#[cfg(any(windows, test))]
 fn component_error(component: ThemeComponent, phase: &str, error: io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
@@ -145,7 +158,7 @@ fn apply_on_supported_platform(
     let _guard = lock
         .acquire()
         .map_err(|error| package_error(package, kind, "commit lock acquisition", error))?;
-    commit_prepared(&prepared, &backend)
+    commit_prepared(&prepared, &backend, CommitMode::Apply)
         .map_err(|error| package_error(package, kind, "commit", error))
 }
 
@@ -169,7 +182,70 @@ fn apply_with_backend(
     backend: &dyn ThemeBackend,
 ) -> io::Result<ApplySummary> {
     let prepared = prepare_package(package, kind, backend)?;
-    commit_prepared(&prepared, backend)
+    commit_prepared(&prepared, backend, CommitMode::Apply)
+}
+
+/// 启动默认主题按固定顺序串行准备；缺失的组件表示未配置，不视为错误。
+#[cfg(any(windows, test))]
+pub(super) fn prepare_startup_theme(
+    edgeless_dir: &Path,
+    backend: &dyn ThemeBackend,
+) -> io::Result<PreparedTheme> {
+    let candidates = [
+        (edgeless_dir.join("wp.jpg"), ThemeType::Jpg),
+        (edgeless_dir.join("Default/IconPack.eis"), ThemeType::Eis),
+        (edgeless_dir.join("Default/MouseStyle.ems"), ThemeType::Ems),
+        (
+            edgeless_dir.join("Default/StartIsBackConfig.esc"),
+            ThemeType::Esc,
+        ),
+        (
+            edgeless_dir.join("Default/SystemIconPack.ess"),
+            ThemeType::Ess,
+        ),
+    ];
+    let mut combined = PreparedTheme {
+        source: edgeless_dir.to_owned(),
+        kind: ThemeType::Eth,
+        paths: None,
+        staging: Vec::new(),
+        components: Vec::new(),
+        warnings: Vec::new(),
+    };
+    for (path, kind) in candidates {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                combined.components.push(PreparedComponent::Failure {
+                    component: standalone_component(kind)
+                        .expect("startup resources are standalone components"),
+                    message: format!("failed to inspect {}: {error}", path.display()),
+                    windows_error_code: error.raw_os_error(),
+                });
+                continue;
+            }
+        }
+        let mut prepared = match prepare_package(&path, kind, backend) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                combined.components.push(PreparedComponent::Failure {
+                    component: standalone_component(kind)
+                        .expect("startup resources are standalone components"),
+                    message: format!("precheck failed for {}: {error}", path.display()),
+                    windows_error_code: error.raw_os_error(),
+                });
+                continue;
+            }
+        };
+        if combined.paths.is_none() {
+            combined.paths = prepared.paths.take();
+        }
+        combined.staging.append(&mut prepared.staging);
+        combined.components.append(&mut prepared.components);
+        combined.warnings.append(&mut prepared.warnings);
+    }
+    Ok(combined)
 }
 
 /// 已完成的预检主题（尚未产生任何系统副作用）。
@@ -177,12 +253,13 @@ fn apply_with_backend(
 /// `staging` 仅在需要解压/发布资源时创建；ELS 独立包与只含 ELS 的 `.eth`
 /// 不创建 staging（SDD：ELS 不解析 7-Zip、不创建 staging、不打开归档）。
 #[cfg(any(windows, test))]
-struct PreparedTheme {
+pub(super) struct PreparedTheme {
     source: std::path::PathBuf,
     kind: ThemeType,
     /// 只有会真正提交资源的主题才解析运行时写入路径；纯 ELS 跳过不依赖桌面等路径。
     paths: Option<ThemePaths>,
-    staging: Option<StagingDir>,
+    /// 保持所有组件 staging 目录存活到提交结束；启动主题可能组合多个独立资源包。
+    staging: Vec<StagingDir>,
     components: Vec<PreparedComponent>,
     warnings: Vec<String>,
 }
@@ -194,11 +271,19 @@ enum PreparedComponent {
     MouseStyle(Box<details::ems::PreparedEms>),
     IconPack(Box<details::eis::PreparedEis>),
     StartIsBackConfig(details::esc::PreparedEsc),
-    SystemIconPack(Box<details::ess::PreparedEss>),
+    SystemIconPack {
+        prepared: Box<details::ess::PreparedEss>,
+        transaction_dir: std::path::PathBuf,
+    },
+    Failure {
+        component: ThemeComponent,
+        message: String,
+        windows_error_code: Option<i32>,
+    },
 }
 
 #[cfg(any(windows, test))]
-fn prepare_package(
+pub(super) fn prepare_package(
     package: &Path,
     kind: ThemeType,
     backend: &dyn ThemeBackend,
@@ -208,7 +293,7 @@ fn prepare_package(
             source: package.to_owned(),
             kind,
             paths: None,
-            staging: None,
+            staging: Vec::new(),
             components: vec![PreparedComponent::LoadScreen],
             warnings: vec![ELS_WARNING.to_owned()],
         }),
@@ -221,7 +306,7 @@ fn prepare_package(
                 source: package.to_owned(),
                 kind,
                 paths: Some(paths),
-                staging: Some(staging),
+                staging: vec![staging],
                 components: vec![PreparedComponent::Wallpaper(wallpaper)],
                 warnings: vec![],
             })
@@ -235,7 +320,7 @@ fn prepare_package(
                 source: package.to_owned(),
                 kind,
                 paths: Some(paths),
-                staging: Some(staging),
+                staging: vec![staging],
                 components: vec![PreparedComponent::StartIsBackConfig(esc)],
                 warnings: vec![],
             })
@@ -254,7 +339,7 @@ fn prepare_package(
                 source: package.to_owned(),
                 kind,
                 paths: Some(paths),
-                staging: Some(staging),
+                staging: vec![staging],
                 components: vec![PreparedComponent::IconPack(Box::new(icon_pack))],
                 warnings: vec![],
             })
@@ -273,7 +358,7 @@ fn prepare_package(
                 source: package.to_owned(),
                 kind,
                 paths: Some(paths),
-                staging: Some(staging),
+                staging: vec![staging],
                 components: vec![PreparedComponent::MouseStyle(Box::new(mouse_style))],
                 warnings: vec![],
             })
@@ -284,14 +369,16 @@ fn prepare_package(
             let staging = StagingDir::create(&paths)?;
             let system_icon_pack =
                 details::ess::prepare_ess_from_archive(package, &staging.join("ess"), backend)?;
+            let transaction_dir = staging.path().to_owned();
             Ok(PreparedTheme {
                 source: package.to_owned(),
                 kind,
                 paths: Some(paths),
-                staging: Some(staging),
-                components: vec![PreparedComponent::SystemIconPack(Box::new(
-                    system_icon_pack,
-                ))],
+                staging: vec![staging],
+                components: vec![PreparedComponent::SystemIconPack {
+                    prepared: Box::new(system_icon_pack),
+                    transaction_dir,
+                }],
                 warnings: vec![],
             })
         }
@@ -397,7 +484,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
             source: package.to_owned(),
             kind: ThemeType::Eth,
             paths: None,
-            staging: None,
+            staging: Vec::new(),
             components: vec![PreparedComponent::LoadScreen],
             warnings,
         });
@@ -408,7 +495,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
             source: package.to_owned(),
             kind: ThemeType::Eth,
             paths: None,
-            staging: None,
+            staging: Vec::new(),
             components: Vec::new(),
             warnings,
         });
@@ -424,8 +511,6 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
         .collect::<Vec<_>>();
     backend.extract_archive_entries(package, staging.path(), &whitelist)?;
     details::archive::verify_extraction(staging.path())?;
-    let staging = Some(staging);
-
     // 嵌套组件独立预检。
     let mut prepared_components = Vec::new();
     for (component, path) in &components {
@@ -434,10 +519,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
             prepared_components.push(PreparedComponent::LoadScreen);
             continue;
         }
-        let staged = staging
-            .as_ref()
-            .expect("a non-ELS component always has staging")
-            .join(path);
+        let staged = staging.join(path);
         match component {
             ThemeComponent::LoadScreen => unreachable!("LoadScreen is handled without extraction"),
             ThemeComponent::Wallpaper => {
@@ -448,10 +530,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
             ThemeComponent::IconPack => {
                 let icon_pack = details::eis::prepare_eis_from_archive(
                     &staged,
-                    &staging
-                        .as_ref()
-                        .expect("a non-ELS component always has staging")
-                        .join("eis"),
+                    &staging.join("eis"),
                     &paths,
                     backend,
                 )
@@ -461,10 +540,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
             ThemeComponent::MouseStyle => {
                 let mouse_style = details::ems::prepare_ems_from_archive(
                     &staged,
-                    &staging
-                        .as_ref()
-                        .expect("a non-ELS component always has staging")
-                        .join("ems"),
+                    &staging.join("ems"),
                     &paths,
                     backend,
                 )
@@ -477,18 +553,13 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
                 prepared_components.push(PreparedComponent::StartIsBackConfig(esc));
             }
             ThemeComponent::SystemIconPack => {
-                let system_icon_pack = details::ess::prepare_ess_from_archive(
-                    &staged,
-                    &staging
-                        .as_ref()
-                        .expect("a non-ELS component always has staging")
-                        .join("ess"),
-                    backend,
-                )
-                .map_err(|error| component_error(*component, "precheck", error))?;
-                prepared_components.push(PreparedComponent::SystemIconPack(Box::new(
-                    system_icon_pack,
-                )));
+                let system_icon_pack =
+                    details::ess::prepare_ess_from_archive(&staged, &staging.join("ess"), backend)
+                        .map_err(|error| component_error(*component, "precheck", error))?;
+                prepared_components.push(PreparedComponent::SystemIconPack {
+                    prepared: Box::new(system_icon_pack),
+                    transaction_dir: staging.path().to_owned(),
+                });
             }
         }
     }
@@ -497,7 +568,7 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
         source: package.to_owned(),
         kind: ThemeType::Eth,
         paths: Some(paths),
-        staging,
+        staging: vec![staging],
         components: prepared_components,
         warnings,
     })
@@ -506,9 +577,16 @@ fn prepare_eth_package(package: &Path, backend: &dyn ThemeBackend) -> io::Result
 /// 提交阶段：在 named mutex 内按数据依赖提交组件，累计刷新请求，
 /// 最后由统一 RefreshPlan 以最小刷新集合执行。
 #[cfg(any(windows, test))]
-fn commit_prepared(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CommitMode {
+    Apply,
+    Startup,
+}
+
+pub(super) fn commit_prepared(
     prepared: &PreparedTheme,
     backend: &dyn ThemeBackend,
+    mode: CommitMode,
 ) -> io::Result<ApplySummary> {
     let mut summary = ApplySummary {
         source: prepared.source.clone(),
@@ -520,24 +598,38 @@ fn commit_prepared(
     };
     let mut refresh_plan = RefreshPlan::default();
     let mut cursors_refreshed = false;
-    let should_log = prepared
-        .components
-        .iter()
-        .any(|component| !matches!(component, PreparedComponent::LoadScreen));
-    if !should_log {
+    let has_committable_component = prepared.components.iter().any(|component| {
+        !matches!(
+            component,
+            PreparedComponent::LoadScreen | PreparedComponent::Failure { .. }
+        )
+    });
+    if !has_committable_component {
         summary
             .components
-            .extend(prepared.components.iter().map(|_| ComponentOutcome {
-                component: ThemeComponent::LoadScreen,
-                status: ComponentStatus::Skipped,
-                windows_error_code: None,
+            .extend(prepared.components.iter().map(|component| match component {
+                PreparedComponent::LoadScreen => ComponentOutcome {
+                    component: ThemeComponent::LoadScreen,
+                    status: ComponentStatus::Skipped,
+                    windows_error_code: None,
+                },
+                PreparedComponent::Failure {
+                    component,
+                    message,
+                    windows_error_code,
+                } => ComponentOutcome {
+                    component: *component,
+                    status: ComponentStatus::Failed(message.clone()),
+                    windows_error_code: *windows_error_code,
+                },
+                _ => unreachable!("committable components were checked above"),
             }));
         return Ok(summary);
     }
     let paths = prepared.paths.as_ref().ok_or_else(|| {
         io::Error::other("an applicable theme component was prepared without runtime paths")
     })?;
-    let mut event_log = if should_log {
+    let mut event_log = if has_committable_component {
         match details::event_log::ThemeEventLog::open(paths, &prepared.source) {
             Ok(log) => Some(log),
             Err(error) => {
@@ -603,7 +695,7 @@ fn commit_prepared(
                 match details::eis::commit_eis(icon_pack, backend, paths, &mut refresh_plan) {
                     Ok((stats, link_failures)) => {
                         summary.eis = stats;
-                        if stats.updated == 0 && stats.failed > 0 {
+                        if stats.updated + stats.unchanged == 0 && stats.failed > 0 {
                             ComponentOutcome {
                                 component: ThemeComponent::IconPack,
                                 status: ComponentStatus::Failed(format!(
@@ -661,44 +753,49 @@ fn commit_prepared(
                     },
                 }
             }
-            PreparedComponent::SystemIconPack(system_icon_pack) => {
-                let transaction_dir =
-                    prepared
-                        .staging
-                        .as_ref()
-                        .map(StagingDir::path)
-                        .ok_or_else(|| {
-                            io::Error::other(
-                                "ESS component requires a staging directory, but none was prepared",
-                            )
-                        })?;
-                match system_icon_pack.commit_snapshot(transaction_dir, paths) {
-                    Ok(commit) => {
-                        let index = summary.components.len();
-                        pending_ess = Some(index);
-                        refresh_plan.request(RefreshRequest::IconCacheInvalidate);
-                        refresh_plan.request(RefreshRequest::SystemIconReplacement(commit));
-                        ComponentOutcome {
-                            component: ThemeComponent::SystemIconPack,
-                            status: ComponentStatus::Applied,
-                            windows_error_code: None,
-                        }
-                    }
-                    Err(error) => ComponentOutcome {
+            PreparedComponent::SystemIconPack {
+                prepared: system_icon_pack,
+                transaction_dir,
+            } => match system_icon_pack.commit_snapshot(transaction_dir, paths) {
+                Ok(commit) => {
+                    let index = summary.components.len();
+                    pending_ess = Some(index);
+                    refresh_plan.request(RefreshRequest::IconCacheInvalidate);
+                    refresh_plan.request(RefreshRequest::SystemIconReplacement(commit));
+                    ComponentOutcome {
                         component: ThemeComponent::SystemIconPack,
-                        status: ComponentStatus::Failed(format!(
-                            "failed to snapshot the system icon DLLs: {error}"
-                        )),
-                        windows_error_code: error.raw_os_error(),
-                    },
+                        status: ComponentStatus::Applied,
+                        windows_error_code: None,
+                    }
                 }
-            }
+                Err(error) => ComponentOutcome {
+                    component: ThemeComponent::SystemIconPack,
+                    status: ComponentStatus::Failed(format!(
+                        "failed to snapshot the system icon DLLs: {error}"
+                    )),
+                    windows_error_code: error.raw_os_error(),
+                },
+            },
+            PreparedComponent::Failure {
+                component,
+                message,
+                windows_error_code,
+            } => ComponentOutcome {
+                component: *component,
+                status: ComponentStatus::Failed(message.clone()),
+                windows_error_code: *windows_error_code,
+            },
         };
         summary.components.push(outcome);
     }
 
     // 统一最小刷新。
-    let refresh_execution = refresh_plan.execute_minimal(backend, paths);
+    let refresh_execution = if mode == CommitMode::Startup {
+        refresh_plan.discard_shortcut_notifications();
+        refresh_plan.execute_startup(backend, paths)
+    } else {
+        refresh_plan.execute_minimal(backend, paths)
+    };
     let ess_error = refresh_execution
         .ess_error
         .map(|error| (error.to_string(), error.raw_os_error()));

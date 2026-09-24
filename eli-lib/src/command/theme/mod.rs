@@ -1,13 +1,15 @@
 // `eli theme` 父命令模块。
 //
-// 首版只包含 `apply` 子命令：把主题包、资源包或壁纸应用到当前 Windows PE 会话。
-// 未来的 `theme store`（启动盘持久化）等子命令在各自设计中独立立项，这里不提前
-// 混入其职责。
+// `apply` 热应用当前会话主题；`startup` 接管 PE 启动期默认主题与后置图标对账。
+// 未来的 `theme store`（启动盘持久化）仍在独立设计中实现。
 
 #[path = "apply.rs"]
 mod apply;
+#[path = "startup.rs"]
+mod startup;
 
 pub use apply::{
     ApplySummary, ComponentOutcome, ComponentStatus, EisStats, ExecutedRefresh, ThemeComponent,
     ThemeType, apply,
 };
+pub use startup::startup;

@@ -184,6 +184,20 @@ fi
 grep -Fq 'WindowsPE' "$stderr_path"
 grep -Fq 'MacOS' "$stderr_path"
 
+if "$eli" theme startup > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme startup unexpectedly accepted this OS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'MacOS' "$stderr_path"
+
+if "$eli" theme startup --reconcile > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme startup reconciliation unexpectedly accepted this OS.' >&2
+    exit 1
+fi
+grep -Fq 'WindowsPE' "$stderr_path"
+grep -Fq 'MacOS' "$stderr_path"
+
 if "$eli" plugin localboost load "$test_root/plugin.7zl" > "$stdout_path" 2> "$stderr_path"; then
     echo 'LocalBoost loading unexpectedly accepted macOS.' >&2
     exit 1

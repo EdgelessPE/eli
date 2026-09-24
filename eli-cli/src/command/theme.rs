@@ -12,11 +12,18 @@ pub(crate) enum ThemeCommand {
         #[arg(value_name = "PACKAGE")]
         package: PathBuf,
     },
+    /// Apply the boot disk's default theme before Explorer, or reconcile shortcut icons later.
+    Startup {
+        /// Only reconcile published EIS icons with shortcuts created after Explorer startup.
+        #[arg(long)]
+        reconcile: bool,
+    },
 }
 
 pub(crate) fn execute(ctx: Arc<Ctx>, command: ThemeCommand) -> io::Result<()> {
     match command {
         ThemeCommand::Apply { package } => apply(ctx.as_ref(), &package),
+        ThemeCommand::Startup { reconcile } => startup(ctx.as_ref(), reconcile),
     }
 }
 
@@ -28,6 +35,19 @@ fn apply(ctx: &Ctx, package: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::other(format!(
             "{} theme component(s) failed",
+            summary.failed()
+        )))
+    }
+}
+
+fn startup(ctx: &Ctx, reconcile: bool) -> io::Result<()> {
+    let summary = eli_lib::command::theme::startup(ctx, reconcile)?;
+    print_summary(&summary);
+    if summary.is_success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} startup theme component(s) failed",
             summary.failed()
         )))
     }
@@ -71,10 +91,15 @@ fn print_summary(summary: &ApplySummary) {
         eprintln!("warning: {warning}");
     }
     let eis = &summary.eis;
-    if eis.updated > 0 || eis.not_found > 0 || eis.failed > 0 {
+    if eis.checked > 0
+        || eis.updated > 0
+        || eis.unchanged > 0
+        || eis.not_found > 0
+        || eis.failed > 0
+    {
         println!(
-            "Shortcut icons: {} updated, {} unmatched, {} failed",
-            eis.updated, eis.not_found, eis.failed
+            "Shortcut icons: {} checked, {} updated, {} unchanged, {} unmatched, {} failed",
+            eis.checked, eis.updated, eis.unchanged, eis.not_found, eis.failed
         );
     }
     let refresh = &summary.refresh;

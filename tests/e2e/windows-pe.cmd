@@ -238,9 +238,32 @@ if errorlevel 1 (
     type "%STDOUT%" 1>&2
     set "RESULT=1"
 )
-findstr /c:"1 updated, 0 unmatched, 0 failed" "%STDOUT%" >nul
+findstr /c:"1 checked, 1 updated, 0 unchanged, 0 unmatched, 0 failed" "%STDOUT%" >nul
 if errorlevel 1 (
-    echo EIS shortcut counts were incorrect. 1>&2
+    findstr /c:"1 checked, 0 updated, 1 unchanged, 0 unmatched, 0 failed" "%STDOUT%" >nul
+    if errorlevel 1 (
+        echo EIS shortcut counts were incorrect. 1>&2
+        type "%STDOUT%" 1>&2
+        set "RESULT=1"
+    )
+)
+
+rem 后置对账直接消费已发布图标；第二次读取应识别为已一致且不重复写入。
+"%ELI%" theme startup --reconcile >"%STDOUT%" 2>"%STDERR%"
+if not "!ERRORLEVEL!"=="0" (
+    echo Theme startup reconciliation should succeed. 1>&2
+    set "RESULT=1"
+    goto theme_done
+)
+findstr /c:"1 checked, 0 updated, 1 unchanged" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo Theme startup reconciliation was not idempotent. 1>&2
+    type "%STDOUT%" 1>&2
+    set "RESULT=1"
+)
+findstr /c:"0 failed" "%STDOUT%" >nul
+if errorlevel 1 (
+    echo Theme startup reconciliation reported a failed link. 1>&2
     type "%STDOUT%" 1>&2
     set "RESULT=1"
 )
@@ -366,6 +389,19 @@ if "%ERRORLEVEL%"=="0" (
 findstr /c:"unsupported theme package extension" "%STDERR%" >nul
 if errorlevel 1 (
     echo Unknown theme extension was not rejected. 1>&2
+    set "RESULT=1"
+)
+
+rem 当前 E2E 桌面已有 Explorer，启动首阶段必须在任何主题副作用前拒绝。
+"%ELI%" theme startup >"%STDOUT%" 2>"%STDERR%"
+if "!ERRORLEVEL!"=="0" (
+    echo Theme startup unexpectedly accepted a running Explorer. 1>&2
+    set "RESULT=1"
+)
+findstr /c:"Explorer is already running" "%STDERR%" >nul
+if errorlevel 1 (
+    echo Theme startup did not report its Explorer precondition. 1>&2
+    type "%STDERR%" 1>&2
     set "RESULT=1"
 )
 

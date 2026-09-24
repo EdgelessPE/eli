@@ -685,6 +685,26 @@ try {
         throw "Theme apply did not report its environment dependency: '$themeEnvironmentError'."
     }
 
+    & $eli theme startup 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Theme startup unexpectedly accepted WindowsNormal.'
+    }
+    $startupEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($startupEnvironmentError.Contains('WindowsPE') -and
+            $startupEnvironmentError.Contains('WindowsNormal'))) {
+        throw "Theme startup did not report its environment dependency: '$startupEnvironmentError'."
+    }
+
+    & $eli theme startup --reconcile 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Theme startup reconciliation unexpectedly accepted WindowsNormal.'
+    }
+    $reconcileEnvironmentError = Get-Content -Raw -LiteralPath $stderrPath
+    if (-not ($reconcileEnvironmentError.Contains('WindowsPE') -and
+            $reconcileEnvironmentError.Contains('WindowsNormal'))) {
+        throw "Theme startup reconciliation did not report its environment dependency: '$reconcileEnvironmentError'."
+    }
+
     Set-Content -NoNewline -LiteralPath (Join-Path $resolvedTestRoot 'loadscreen.els') -Value 'els'
     & $eli theme apply (Join-Path $resolvedTestRoot 'loadscreen.els') `
         1> $stdoutPath 2> $stderrPath

@@ -17,9 +17,19 @@ pub fn set_icon_location(link: &Path, icon: &Path) -> io::Result<()> {
 
 /// 在一个专用单线程 STA 中批量修改 `.lnk` 图标；结果与输入顺序一一对应。
 pub fn set_icon_locations(changes: &[(PathBuf, PathBuf)]) -> io::Result<Vec<io::Result<()>>> {
+    Ok(reconcile_icon_locations(changes)?
+        .into_iter()
+        .map(|result| result.map(|_| ()))
+        .collect())
+}
+
+/// 仅在图标位置或索引不一致时写回 `.lnk`；`true` 表示实际发生修改。
+pub fn reconcile_icon_locations(
+    changes: &[(PathBuf, PathBuf)],
+) -> io::Result<Vec<io::Result<bool>>> {
     #[cfg(windows)]
     {
-        windows::set_icon_locations(changes)
+        windows::reconcile_icon_locations(changes)
     }
     #[cfg(not(windows))]
     {

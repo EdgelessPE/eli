@@ -62,6 +62,9 @@ pub struct FakeState {
     pub shell_running: bool,
     pub shell_events: Vec<String>,
     pub modified_links: Vec<(PathBuf, PathBuf)>,
+    /// `.lnk` 当前图标位置，用于验证对账的幂等写入。
+    pub link_icons: HashMap<PathBuf, PathBuf>,
+    pub notified_links: Vec<PathBuf>,
     pub esc_runs: Vec<PathBuf>,
     pub wall_runs: Vec<PathBuf>,
     pub temporary_permission_targets: Vec<PathBuf>,
@@ -432,7 +435,7 @@ impl ThemeBackend for FakeBackend {
     fn modify_shortcut_icons(
         &self,
         changes: &[(PathBuf, PathBuf)],
-    ) -> io::Result<Vec<io::Result<()>>> {
+    ) -> io::Result<Vec<io::Result<bool>>> {
         Ok(changes
             .iter()
             .map(|(link, icon)| {
@@ -448,18 +451,23 @@ impl ThemeBackend for FakeBackend {
                         link.display()
                     )));
                 }
+                if state.link_icons.get(link) == Some(icon) {
+                    return Ok(false);
+                }
+                state.link_icons.insert(link.clone(), icon.clone());
                 state.modified_links.push((link.clone(), icon.clone()));
-                Ok(())
+                Ok(true)
             })
             .collect())
     }
 
-    fn notify_shortcuts(&self, _links: &[PathBuf]) -> io::Result<()> {
+    fn notify_shortcuts(&self, links: &[PathBuf]) -> io::Result<()> {
         self.commit_span("notify_shortcuts", || ());
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.fail_notify {
             return Err(io::Error::other("fake shortcut notification failure"));
         }
+        state.notified_links.extend_from_slice(links);
         Ok(())
     }
 
