@@ -132,7 +132,15 @@ impl RefreshPlan {
                 match commit.replace(backend) {
                     Ok(()) => {
                         if self.icon_cache_invalidate {
-                            match clear_icon_db_cache_resilient(backend, paths) {
+                            let cache_result = if allow_shell_lifecycle {
+                                clear_icon_db_cache_resilient(backend, paths)
+                            } else {
+                                // 启动阶段禁止任何 Explorer 生命周期操作。即使缓存文件
+                                // 意外被其他进程占用，也只能报告告警，不能借重试路径停止
+                                // 刚出现的 Explorer。
+                                clear_icon_db_cache(paths)
+                            };
+                            match cache_result {
                                 Ok(()) => result.executed.icon_cache_invalidated = true,
                                 Err(error) => result.executed.warnings.push(error.to_string()),
                             }
@@ -147,7 +155,12 @@ impl RefreshPlan {
                     }
                 }
             } else if self.icon_cache_invalidate {
-                match clear_icon_db_cache_resilient(backend, paths) {
+                let cache_result = if allow_shell_lifecycle {
+                    clear_icon_db_cache_resilient(backend, paths)
+                } else {
+                    clear_icon_db_cache(paths)
+                };
+                match cache_result {
                     Ok(()) => result.executed.icon_cache_invalidated = true,
                     Err(error) => result.executed.warnings.push(error.to_string()),
                 }
@@ -353,5 +366,32 @@ mod tests {
         let state = backend.state.lock().unwrap();
         assert!(state.shell_events.is_empty());
         assert!(state.shell_running);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_cache_failure_never_uses_shell_stop_for_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let root = test_root("startup-locked-cache");
+        let backend = FakeBackend::new(root.join("volume"));
+        std::fs::create_dir_all(&backend.paths.icon_cache_dir).unwrap();
+        let cache = backend.paths.icon_cache_dir.join("iconcache.db");
+        std::fs::write(&cache, b"locked cache").unwrap();
+        let _locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&cache)
+            .unwrap();
+        let mut plan = RefreshPlan::default();
+        plan.request(RefreshRequest::ExplorerRestart);
+        plan.request(RefreshRequest::IconCacheInvalidate);
+
+        let execution = plan.execute_startup(&backend, &backend.paths);
+
+        assert!(execution.lifecycle_error.is_none());
+        assert!(!execution.executed.warnings.is_empty());
+        assert!(backend.state.lock().unwrap().shell_events.is_empty());
     }
 }
