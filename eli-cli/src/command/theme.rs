@@ -1,6 +1,6 @@
 use clap::Subcommand;
 use eli_lib::Ctx;
-use eli_lib::command::theme::{ApplySummary, ComponentStatus};
+use eli_lib::command::theme::{ApplySummary, ComponentStatus, StoreSummary};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +9,11 @@ use std::sync::Arc;
 pub(crate) enum ThemeCommand {
     /// Apply a theme package, resource pack or wallpaper to the current Edgeless PE session.
     Apply {
+        #[arg(value_name = "PACKAGE")]
+        package: PathBuf,
+    },
+    /// Store a theme package, resource pack or wallpaper on the selected boot disk.
+    Store {
         #[arg(value_name = "PACKAGE")]
         package: PathBuf,
     },
@@ -23,8 +28,32 @@ pub(crate) enum ThemeCommand {
 pub(crate) fn execute(ctx: Arc<Ctx>, command: ThemeCommand) -> io::Result<()> {
     match command {
         ThemeCommand::Apply { package } => apply(ctx.as_ref(), &package),
+        ThemeCommand::Store { package } => store(ctx.as_ref(), &package),
         ThemeCommand::Startup { reconcile } => startup(ctx.as_ref(), reconcile),
     }
+}
+
+fn store(ctx: &Ctx, package: &Path) -> io::Result<()> {
+    let summary = eli_lib::command::theme::store(ctx, package)?;
+    print_store_summary(&summary);
+    Ok(())
+}
+
+fn print_store_summary(summary: &StoreSummary) {
+    for component in &summary.stored {
+        println!("Stored {}", component.display_name());
+    }
+    if summary.default_replaced {
+        println!("Replaced the boot disk default theme directory");
+    }
+    if summary.wallpaper_backed_up {
+        println!("Backed up the previous wallpaper to wp_backup.jpg");
+    }
+    println!(
+        "Stored {} theme input on {}",
+        summary.kind.display_name(),
+        summary.bootdisk.display()
+    );
 }
 
 fn apply(ctx: &Ctx, package: &Path) -> io::Result<()> {

@@ -9,6 +9,7 @@ loadscreen-bake = ["dep:image", "dep:tar", "dep:webp"]
 theme-apply = ["dep:image"]
 
 [dependencies]
+encoding_rs = "0.8"
 fs2 = "0.4"
 image = { version = "0.25", optional = true, default-features = false, features = [
     "bmp",

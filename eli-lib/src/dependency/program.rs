@@ -18,13 +18,14 @@ pub enum ProgramDependency {
 
 impl fmt::Display for ProgramDependency {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(specification(*self).file_name)
+        formatter.write_str(specification(*self).display_name)
     }
 }
 
 #[derive(Debug)]
 struct ProgramSpecification {
-    file_name: &'static str,
+    display_name: &'static str,
+    file_names: &'static [&'static str],
     probe_arguments: &'static [&'static str],
     probe_timeout: Duration,
 }
@@ -32,17 +33,23 @@ struct ProgramSpecification {
 fn specification(dependency: ProgramDependency) -> ProgramSpecification {
     match dependency {
         ProgramDependency::SevenZip => ProgramSpecification {
-            file_name: "7z.exe",
+            display_name: "7-Zip",
+            #[cfg(windows)]
+            file_names: &["7z.exe"],
+            #[cfg(not(windows))]
+            file_names: &["7z", "7zz"],
             probe_arguments: &["i"],
             probe_timeout: Duration::from_secs(5),
         },
         ProgramDependency::Cmd => ProgramSpecification {
-            file_name: "cmd.exe",
+            display_name: "cmd.exe",
+            file_names: &["cmd.exe"],
             probe_arguments: &["/d", "/c", "exit", "0"],
             probe_timeout: Duration::from_secs(5),
         },
         ProgramDependency::Pecmd => ProgramSpecification {
-            file_name: "pecmd.exe",
+            display_name: "pecmd.exe",
+            file_names: &["pecmd.exe"],
             // PECMD 的 EXEC 参数在不同版本中存在不兼容行为；/ ? 是各版本均可
             // 无副作用执行并以成功状态退出的探测方式。
             probe_arguments: &["/?"],
@@ -76,12 +83,27 @@ impl ResolvedPrograms {
 
 pub(super) fn resolve_and_probe(dependency: ProgramDependency) -> io::Result<PathBuf> {
     let specification = specification(dependency);
-    let path = find_in_path(
-        OsStr::new(specification.file_name),
-        env::var_os("PATH").as_deref(),
-    )?;
+    let path = find_any_in_path(specification.file_names, env::var_os("PATH").as_deref())?;
     probe(&path, &specification)?;
     Ok(path)
+}
+
+fn find_any_in_path(file_names: &[&str], path: Option<&OsStr>) -> io::Result<PathBuf> {
+    let mut errors = Vec::new();
+    for file_name in file_names {
+        match find_in_path(OsStr::new(file_name), path) {
+            Ok(path) => return Ok(path),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "dependency was not found in PATH; tried {}: {}",
+            file_names.join(", "),
+            errors.join("; ")
+        ),
+    ))
 }
 
 fn find_in_path(file_name: &OsStr, path: Option<&OsStr>) -> io::Result<PathBuf> {
@@ -223,7 +245,8 @@ mod tests {
             ProgramDependency::Pecmd,
         ] {
             let specification = specification(dependency);
-            assert!(!specification.file_name.is_empty());
+            assert!(!specification.display_name.is_empty());
+            assert!(!specification.file_names.is_empty());
             assert!(!specification.probe_arguments.is_empty());
             assert!(!specification.probe_timeout.is_zero());
         }
@@ -233,7 +256,8 @@ mod tests {
     fn probe_accepts_a_successful_process() {
         let executable = env::current_exe().unwrap();
         let specification = ProgramSpecification {
-            file_name: "test-process",
+            display_name: "test-process",
+            file_names: &["test-process"],
             probe_arguments: &["--exact", "dependency::program::tests::probe_success_child"],
             probe_timeout: Duration::from_secs(5),
         };
@@ -245,7 +269,8 @@ mod tests {
     fn probe_rejects_a_nonzero_exit_status() {
         let executable = env::current_exe().unwrap();
         let specification = ProgramSpecification {
-            file_name: "test-process",
+            display_name: "test-process",
+            file_names: &["test-process"],
             probe_arguments: &[
                 "--ignored",
                 "--exact",
@@ -264,7 +289,8 @@ mod tests {
     fn probe_terminates_a_process_after_timeout() {
         let executable = env::current_exe().unwrap();
         let specification = ProgramSpecification {
-            file_name: "test-process",
+            display_name: "test-process",
+            file_names: &["test-process"],
             probe_arguments: &[
                 "--ignored",
                 "--exact",

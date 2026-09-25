@@ -45,6 +45,11 @@ pub const ESS_LIMITS: Limits = Limits {
     max_entries: 8,
     max_total_size: 256 << 20,
 };
+/// 旧版 LoadScreen 包只持久化为少量启动帧；为兼容历史包保留宽松上限。
+pub const ELS_LIMITS: Limits = Limits {
+    max_entries: 64,
+    max_total_size: 1 << 30,
+};
 
 /// 设备名（Windows 保留名）。带扩展名同样视为非法。
 fn is_device_name(component: &str) -> bool {

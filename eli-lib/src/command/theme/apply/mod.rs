@@ -5,8 +5,7 @@
 // `ess` 文件中，真实 Win32 副作用集中在 `windows`。非 Windows 生产构建只保留
 // 公开结果类型和平台拒绝入口；测试构建仍编译完整编排逻辑并使用 fake 后端验证。
 
-#[cfg(any(windows, test))]
-pub(super) mod archive;
+pub(in crate::command::theme) mod archive;
 #[cfg(any(windows, test))]
 pub(in crate::command::theme) mod eis;
 #[cfg(any(windows, test))]
@@ -21,8 +20,7 @@ pub(super) mod event_log;
 pub(in crate::command::theme) mod refresh;
 #[cfg(test)]
 pub mod test_support;
-#[cfg(any(windows, test))]
-pub(super) mod transaction;
+pub(in crate::command::theme) mod transaction;
 #[cfg(any(windows, test))]
 pub(super) mod wallpaper;
 #[cfg(windows)]

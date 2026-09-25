@@ -670,6 +670,159 @@ try {
     }
 
     # -----------------------------------------------------------------------
+    # eli theme store：歧义保护、旧版固定路径与跨进程串行写入
+    # -----------------------------------------------------------------------
+
+    $themeEsc = Join-Path $resolvedTestRoot 'Classic.esc'
+    Set-Content -NoNewline -LiteralPath $themeEsc -Value 'LOAD %SystemRoot%\System32\shell32.dll'
+    & $eli theme store $themeEsc 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Theme storage without an explicit disk unexpectedly succeeded.'
+    }
+    if (-not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk')) {
+        throw 'Ambiguous theme storage did not suggest --bootdisk.'
+    }
+    foreach ($driveRoot in $driveRoots) {
+        if (Test-Path -LiteralPath (Join-Path $driveRoot 'Edgeless\Default\StartIsBackConfig.esc')) {
+            throw 'Ambiguous theme storage modified a boot disk.'
+        }
+    }
+
+    & $eli --bootdisk $driveRoots[0] theme store $themeEsc 1> $stdoutPath 2> $stderrPath
+    $storedEsc = Join-Path $driveRoots[0] 'Edgeless\Default\StartIsBackConfig.esc'
+    $storedInfo = Join-Path $driveRoots[0] 'Edgeless\Default\Info.txt'
+    if ($LASTEXITCODE -ne 0 -or
+            -not ((Get-FileHash -Algorithm SHA256 -LiteralPath $themeEsc).Hash -eq
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $storedEsc).Hash) -or
+            @(Get-Content -LiteralPath $storedInfo).Count -ne 5) {
+        throw 'Standalone ESC storage did not reproduce the legacy layout.'
+    }
+
+    $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($null -ne $sevenZipCommand) {
+        $sevenZip = $sevenZipCommand.Source
+        $resourceCases = @(
+        @{ Extension = 'eis'; Destination = 'IconPack.eis'; Payload = 'icon.png' },
+        @{ Extension = 'ems'; Destination = 'MouseStyle.ems'; Payload = 'cursor.cur' },
+        @{ Extension = 'ess'; Destination = 'SystemIconPack.ess'; Payload = 'shell32.dll' }
+    )
+        foreach ($case in $resourceCases) {
+        $payloadDirectory = Join-Path $resolvedTestRoot "payload-$($case.Extension)"
+        $archive = Join-Path $resolvedTestRoot "Standalone.$($case.Extension)"
+        New-Item -ItemType Directory -Path $payloadDirectory | Out-Null
+        Set-Content -NoNewline -LiteralPath (Join-Path $payloadDirectory $case.Payload) -Value 'payload'
+        & $sevenZip a -t7z $archive (Join-Path $payloadDirectory '*') | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create .$($case.Extension) test archive." }
+        & $eli --bootdisk $driveRoots[0] theme store $archive 1> $stdoutPath 2> $stderrPath
+        $storedArchive = Join-Path $driveRoots[0] "Edgeless\Default\$($case.Destination)"
+        if ($LASTEXITCODE -ne 0 -or
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $storedArchive).Hash) {
+            throw "Standalone .$($case.Extension) storage failed."
+        }
+    }
+
+        $loadscreenDirectory = Join-Path $driveRoots[0] 'Edgeless\Default\LoadScreen'
+    New-Item -ItemType Directory -Path (Join-Path $loadscreenDirectory 'nested') -Force | Out-Null
+    Set-Content -NoNewline -LiteralPath (Join-Path $loadscreenDirectory 'old.jpg') -Value 'old'
+    Set-Content -NoNewline -LiteralPath (Join-Path $loadscreenDirectory 'keep.ini') -Value 'keep'
+    Set-Content -NoNewline -LiteralPath (Join-Path $loadscreenDirectory 'nested\old.jpg') -Value 'nested'
+    $loadscreenPayload = Join-Path $resolvedTestRoot 'payload-els'
+    $loadscreenArchive = Join-Path $resolvedTestRoot 'Legacy.els'
+    New-Item -ItemType Directory -Path $loadscreenPayload | Out-Null
+    Set-Content -NoNewline -LiteralPath (Join-Path $loadscreenPayload 'new.jpg') -Value 'new'
+    & $sevenZip a -t7z $loadscreenArchive (Join-Path $loadscreenPayload '*') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to create .els test archive.' }
+    & $eli --bootdisk $driveRoots[0] theme store $loadscreenArchive 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (Test-Path -LiteralPath (Join-Path $loadscreenDirectory 'old.jpg')) -or
+            -not (Test-Path -LiteralPath (Join-Path $loadscreenDirectory 'new.jpg')) -or
+            -not (Test-Path -LiteralPath (Join-Path $loadscreenDirectory 'keep.ini')) -or
+            -not (Test-Path -LiteralPath (Join-Path $loadscreenDirectory 'nested\old.jpg'))) {
+        throw 'Standalone ELS storage did not preserve the legacy merge semantics.'
+    }
+
+        $themePayload = Join-Path $resolvedTestRoot 'payload-eth'
+    $themeArchive = Join-Path $resolvedTestRoot 'Complete.eth'
+    New-Item -ItemType Directory -Path $themePayload | Out-Null
+    Copy-Item -LiteralPath (Join-Path $resolvedTestRoot 'Standalone.eis') -Destination (Join-Path $themePayload 'IconPack.eis')
+    Copy-Item -LiteralPath (Join-Path $resolvedTestRoot 'Standalone.ems') -Destination (Join-Path $themePayload 'MouseStyle.ems')
+    Copy-Item -LiteralPath (Join-Path $resolvedTestRoot 'Standalone.ess') -Destination (Join-Path $themePayload 'SystemIconPack.ess')
+    Copy-Item -LiteralPath $loadscreenArchive -Destination (Join-Path $themePayload 'LoadScreen.els')
+    Copy-Item -LiteralPath $themeEsc -Destination (Join-Path $themePayload 'StartIsBackConfig.esc')
+    Set-Content -NoNewline -LiteralPath (Join-Path $themePayload 'WallPaper.jpg') -Value 'theme-wallpaper'
+    Set-Content -NoNewline -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\stale.txt') -Value 'stale'
+    & $sevenZip a -t7z $themeArchive (Join-Path $themePayload '*') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to create .eth test archive.' }
+    & $eli --bootdisk $driveRoots[0] theme store $themeArchive 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\stale.txt')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\IconPack.eis')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\MouseStyle.ems')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\SystemIconPack.ess')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\StartIsBackConfig.esc')) -or
+            -not (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\LoadScreen\new.jpg')) -or
+            (Get-Content -Raw -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\wp.jpg')) -ne 'theme-wallpaper') {
+        throw 'Complete ETH storage did not reproduce the legacy layout.'
+    }
+
+        $partialPayload = Join-Path $resolvedTestRoot 'payload-partial-eth'
+    $partialArchive = Join-Path $resolvedTestRoot 'Partial.eth'
+    New-Item -ItemType Directory -Path $partialPayload | Out-Null
+    Copy-Item -LiteralPath $themeEsc -Destination (Join-Path $partialPayload 'StartIsBackConfig.esc')
+    & $sevenZip a -t7z $partialArchive (Join-Path $partialPayload '*') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to create partial .eth test archive.' }
+    & $eli --bootdisk $driveRoots[0] theme store $partialArchive 1> $stdoutPath 2> $stderrPath
+    [System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance)
+    $infoText = [System.Text.Encoding]::GetEncoding(936).GetString(
+        [System.IO.File]::ReadAllBytes($storedInfo)
+    )
+        if ($LASTEXITCODE -ne 0 -or
+            (Test-Path -LiteralPath (Join-Path $driveRoots[0] 'Edgeless\Default\IconPack.eis')) -or
+            -not $infoText.Contains('图标资源包：Complete ') -or
+            -not $infoText.Contains('开始菜单样式配置文件：Partial ')) {
+        throw 'Partial ETH storage did not preserve old metadata while replacing Default.'
+        }
+    }
+
+    $themeWallpaperA = Join-Path $resolvedTestRoot 'First.jpg'
+    $themeWallpaperB = Join-Path $resolvedTestRoot 'Second.jpg'
+    $storedWallpaper = Join-Path $driveRoots[0] 'Edgeless\wp.jpg'
+    $storedWallpaperBackup = Join-Path $driveRoots[0] 'Edgeless\wp_backup.jpg'
+    Set-Content -NoNewline -LiteralPath $storedWallpaper -Value 'original-wallpaper'
+    Set-Content -NoNewline -LiteralPath $themeWallpaperA -Value 'first-wallpaper'
+    Set-Content -NoNewline -LiteralPath $themeWallpaperB -Value 'second-wallpaper'
+    $wallpaperProcesses = @(@($themeWallpaperA, $themeWallpaperB) | ForEach-Object {
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $eli
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            foreach ($argument in @('--bootdisk', $driveRoots[0], 'theme', 'store', $_)) {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+            [System.Diagnostics.Process]::Start($startInfo)
+        })
+    $wallpaperExitCodes = @($wallpaperProcesses | ForEach-Object {
+            $_.WaitForExit()
+            $exitCode = $_.ExitCode
+            $_.Dispose()
+            $exitCode
+        })
+    if (@($wallpaperExitCodes | Where-Object { $_ -ne 0 }).Count -ne 0) {
+        throw "Concurrent theme stores failed: '$($wallpaperExitCodes -join ', ')'."
+    }
+    $currentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $storedWallpaper).Hash
+    $backupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $storedWallpaperBackup).Hash
+    $inputHashes = @(
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $themeWallpaperA).Hash,
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $themeWallpaperB).Hash
+    ) | Sort-Object
+    $actualHashes = @($currentHash, $backupHash) | Sort-Object
+    if (-not ($actualHashes -join ',').Equals(($inputHashes -join ','))) {
+        throw 'Concurrent theme stores did not leave two complete serialized wallpapers.'
+    }
+
+    # -----------------------------------------------------------------------
     # eli theme apply：WindowsNormal 环境拒绝 + 输入校验（无副作用顺序）
     # -----------------------------------------------------------------------
 

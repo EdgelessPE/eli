@@ -438,6 +438,42 @@ grep -Fq -- '--bootdisk' "$stderr_path"
 [[ ! -s "$stderr_path" ]]
 
 # ---------------------------------------------------------------------------
+# eli theme store：歧义保护、旧版固定路径与跨进程串行写入
+# ---------------------------------------------------------------------------
+
+theme_esc="$test_root/Classic.esc"
+printf '%s' 'LOAD %%SystemRoot%%\System32\shell32.dll' > "$theme_esc"
+if "$eli" theme store "$theme_esc" > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme storage without an explicit disk unexpectedly succeeded.' >&2
+    exit 1
+fi
+grep -Fq -- '--bootdisk' "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Default/StartIsBackConfig.esc" ]]
+[[ ! -e "$mount_z/Edgeless/Default/StartIsBackConfig.esc" ]]
+
+"$eli" --bootdisk "$mount_a" theme store "$theme_esc" > "$stdout_path" 2> "$stderr_path"
+cmp "$theme_esc" "$mount_a/Edgeless/Default/StartIsBackConfig.esc"
+[[ "$(wc -l < "$mount_a/Edgeless/Default/Info.txt")" -eq 5 ]]
+
+theme_wallpaper_a="$test_root/First.jpg"
+theme_wallpaper_b="$test_root/Second.jpg"
+printf '%s' 'original-wallpaper' > "$mount_a/Edgeless/wp.jpg"
+printf '%s' 'first-wallpaper' > "$theme_wallpaper_a"
+printf '%s' 'second-wallpaper' > "$theme_wallpaper_b"
+"$eli" --bootdisk "$mount_a" theme store "$theme_wallpaper_a" > "$test_root/theme-a.out" 2> "$test_root/theme-a.err" &
+theme_pid_a=$!
+"$eli" --bootdisk "$mount_a" theme store "$theme_wallpaper_b" > "$test_root/theme-b.out" 2> "$test_root/theme-b.err" &
+theme_pid_b=$!
+wait "$theme_pid_a"
+wait "$theme_pid_b"
+if cmp -s "$mount_a/Edgeless/wp.jpg" "$theme_wallpaper_a"; then
+    cmp "$mount_a/Edgeless/wp_backup.jpg" "$theme_wallpaper_b"
+else
+    cmp "$mount_a/Edgeless/wp.jpg" "$theme_wallpaper_b"
+    cmp "$mount_a/Edgeless/wp_backup.jpg" "$theme_wallpaper_a"
+fi
+
+# ---------------------------------------------------------------------------
 # eli theme apply：非 WindowsPE 环境拒绝 + 输入校验（无副作用顺序）
 # ---------------------------------------------------------------------------
 
