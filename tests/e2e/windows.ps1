@@ -822,6 +822,46 @@ try {
         throw 'Concurrent theme stores did not leave two complete serialized wallpapers.'
     }
 
+    & $eli --bootdisk $driveRoots[0] theme list 1> $stdoutPath 2> $stderrPath
+    $themeList = Get-Content -Raw -LiteralPath $stdoutPath
+    if ($LASTEXITCODE -ne 0 -or
+            $themeList -notmatch '(?m)^Resource\s+Configured$' -or
+            $themeList -notmatch '(?m)^Icon Pack\s+No$' -or
+            $themeList -notmatch '(?m)^System Icons\s+No$' -or
+            $themeList -notmatch '(?m)^LoadScreen\s+No$' -or
+            $themeList -notmatch '(?m)^Mouse Style\s+No$' -or
+            $themeList -notmatch '(?m)^Start Menu\s+Yes$' -or
+            $themeList -notmatch '(?m)^Wallpaper\s+Yes$' -or
+            $themeList -match '(?i)complete|partial|legacy') {
+        throw "Theme list did not report configured resources: '$themeList'."
+    }
+    & $eli theme delete start-menu 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -eq 0 -or
+            -not (Get-Content -Raw -LiteralPath $stderrPath).Contains('--bootdisk') -or
+            -not (Test-Path -LiteralPath $storedEsc)) {
+        throw 'Ambiguous theme deletion did not preserve the configured resource.'
+    }
+    & $eli --bootdisk $driveRoots[0] theme delete esc 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $storedEsc)) {
+        throw 'Theme ESC deletion failed.'
+    }
+    & $eli --bootdisk $driveRoots[0] theme delete jpg 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (Test-Path -LiteralPath $storedWallpaper) -or
+            -not (Test-Path -LiteralPath $storedWallpaperBackup)) {
+        throw 'Theme wallpaper deletion did not preserve its backup.'
+    }
+    & $eli --bootdisk $driveRoots[0] theme store $themeEsc 1> $stdoutPath 2> $stderrPath
+    & $eli --bootdisk $driveRoots[0] theme store $themeWallpaperA 1> $stdoutPath 2> $stderrPath
+    & $eli --bootdisk $driveRoots[0] theme store $themeWallpaperB 1> $stdoutPath 2> $stderrPath
+    & $eli --bootdisk $driveRoots[0] theme delete all 1> $stdoutPath 2> $stderrPath
+    if ($LASTEXITCODE -ne 0 -or
+            (Test-Path -LiteralPath $storedEsc) -or
+            (Test-Path -LiteralPath $storedWallpaper) -or
+            -not (Test-Path -LiteralPath $storedWallpaperBackup)) {
+        throw 'Deleting all configured theme resources failed.'
+    }
+
     # -----------------------------------------------------------------------
     # eli theme apply：WindowsNormal 环境拒绝 + 输入校验（无副作用顺序）
     # -----------------------------------------------------------------------

@@ -5,8 +5,14 @@
 
 #[path = "apply.rs"]
 mod apply;
+#[path = "delete.rs"]
+mod delete;
+#[path = "list.rs"]
+mod list;
 #[path = "startup.rs"]
 mod startup;
+#[path = "storage.rs"]
+mod storage;
 #[path = "store.rs"]
 mod store;
 
@@ -14,5 +20,7 @@ pub use apply::{
     ApplySummary, ComponentOutcome, ComponentStatus, EisStats, ExecutedRefresh, ThemeComponent,
     ThemeType, apply,
 };
+pub use delete::{ThemeDeleteSummary, ThemeDeleteTarget, delete};
+pub use list::{ListedThemeResource, ThemeListSummary, list};
 pub use startup::startup;
 pub use store::{StoreSummary, store};

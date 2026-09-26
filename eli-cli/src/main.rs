@@ -98,7 +98,7 @@ mod tests {
     };
     use crate::command::plugin::PluginAttributeArg;
     #[cfg(feature = "theme-apply")]
-    use crate::command::theme::ThemeCommand;
+    use crate::command::theme::{ThemeCommand, ThemeResourceArg};
     use std::path::Path;
 
     #[cfg(feature = "theme-apply")]
@@ -125,6 +125,39 @@ mod tests {
                 command: ThemeCommand::Store { package }
             } if package == Path::new("D:\\Themes\\Sample.eth")
         ));
+    }
+
+    #[cfg(feature = "theme-apply")]
+    #[test]
+    fn parses_theme_list() {
+        let cli = Cli::try_parse_from(["eli", "theme", "list"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Theme {
+                command: ThemeCommand::List
+            }
+        ));
+    }
+
+    #[cfg(feature = "theme-apply")]
+    #[test]
+    fn parses_theme_delete_with_resource_aliases() {
+        for (argument, expected) in [
+            ("icon", ThemeResourceArg::Icon),
+            ("eis", ThemeResourceArg::Icon),
+            ("loadscreen", ThemeResourceArg::LoadScreen),
+            ("els", ThemeResourceArg::LoadScreen),
+            ("all", ThemeResourceArg::All),
+        ] {
+            let cli = Cli::try_parse_from(["eli", "theme", "delete", argument]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::Theme {
+                    command: ThemeCommand::Delete { resource }
+                } if std::mem::discriminant(&resource) == std::mem::discriminant(&expected)
+            ));
+        }
     }
 
     #[cfg(feature = "theme-apply")]

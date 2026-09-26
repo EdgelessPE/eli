@@ -1,12 +1,22 @@
-use clap::Subcommand;
+use super::warn_automatic_bootdisk_selection;
+use clap::{Subcommand, ValueEnum};
 use eli_lib::Ctx;
-use eli_lib::command::theme::{ApplySummary, ComponentStatus, StoreSummary};
+use eli_lib::command::theme::{
+    ApplySummary, ComponentStatus, StoreSummary, ThemeComponent, ThemeDeleteTarget,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ThemeCommand {
+    /// List theme resources configured on the selected boot disk.
+    List,
+    /// Delete one theme resource or every configured theme resource from the selected boot disk.
+    Delete {
+        #[arg(value_enum, ignore_case = true, value_name = "RESOURCE")]
+        resource: ThemeResourceArg,
+    },
     /// Apply a theme package, resource pack or wallpaper to the current Edgeless PE session.
     Apply {
         #[arg(value_name = "PACKAGE")]
@@ -25,11 +35,88 @@ pub(crate) enum ThemeCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ThemeResourceArg {
+    #[value(name = "icon", alias = "eis")]
+    Icon,
+    #[value(name = "system-icon", alias = "ess")]
+    SystemIcon,
+    #[value(name = "loadscreen", alias = "els")]
+    LoadScreen,
+    #[value(name = "mouse", alias = "ems")]
+    Mouse,
+    #[value(name = "start-menu", alias = "esc")]
+    StartMenu,
+    #[value(name = "wallpaper", alias = "jpg")]
+    Wallpaper,
+    #[value(name = "all")]
+    All,
+}
+
+impl From<ThemeResourceArg> for ThemeDeleteTarget {
+    fn from(resource: ThemeResourceArg) -> Self {
+        let component = match resource {
+            ThemeResourceArg::Icon => ThemeComponent::IconPack,
+            ThemeResourceArg::SystemIcon => ThemeComponent::SystemIconPack,
+            ThemeResourceArg::LoadScreen => ThemeComponent::LoadScreen,
+            ThemeResourceArg::Mouse => ThemeComponent::MouseStyle,
+            ThemeResourceArg::StartMenu => ThemeComponent::StartIsBackConfig,
+            ThemeResourceArg::Wallpaper => ThemeComponent::Wallpaper,
+            ThemeResourceArg::All => return Self::All,
+        };
+        Self::Resource(component)
+    }
+}
+
 pub(crate) fn execute(ctx: Arc<Ctx>, command: ThemeCommand) -> io::Result<()> {
     match command {
+        ThemeCommand::List => list(ctx.as_ref()),
+        ThemeCommand::Delete { resource } => delete(ctx.as_ref(), resource.into()),
         ThemeCommand::Apply { package } => apply(ctx.as_ref(), &package),
         ThemeCommand::Store { package } => store(ctx.as_ref(), &package),
         ThemeCommand::Startup { reconcile } => startup(ctx.as_ref(), reconcile),
+    }
+}
+
+fn list(ctx: &Ctx) -> io::Result<()> {
+    warn_automatic_bootdisk_selection(ctx.bootdisk()?);
+    let summary = eli_lib::command::theme::list(ctx)?;
+    println!("Boot disk: {}", summary.bootdisk.display());
+    println!("{:<16}Configured", "Resource");
+    for entry in summary.resources {
+        println!(
+            "{:<16}{}",
+            resource_label(entry.resource),
+            if entry.configured { "Yes" } else { "No" }
+        );
+    }
+    Ok(())
+}
+
+fn delete(ctx: &Ctx, target: ThemeDeleteTarget) -> io::Result<()> {
+    let summary = eli_lib::command::theme::delete(ctx, target)?;
+    if summary.deleted.is_empty() {
+        println!(
+            "No configured theme resources found on {}",
+            summary.bootdisk.display()
+        );
+    } else {
+        for resource in summary.deleted {
+            println!("Deleted {}", resource_label(resource));
+        }
+        println!("Updated theme resources on {}", summary.bootdisk.display());
+    }
+    Ok(())
+}
+
+fn resource_label(resource: ThemeComponent) -> &'static str {
+    match resource {
+        ThemeComponent::IconPack => "Icon Pack",
+        ThemeComponent::SystemIconPack => "System Icons",
+        ThemeComponent::LoadScreen => "LoadScreen",
+        ThemeComponent::MouseStyle => "Mouse Style",
+        ThemeComponent::StartIsBackConfig => "Start Menu",
+        ThemeComponent::Wallpaper => "Wallpaper",
     }
 }
 

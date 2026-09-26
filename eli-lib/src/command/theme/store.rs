@@ -166,9 +166,9 @@ struct StorePlan {
     default_replaced: bool,
 }
 
-struct PublishChange {
-    staged: Option<PathBuf>,
-    destination: PathBuf,
+pub(super) struct PublishChange {
+    pub(super) staged: Option<PathBuf>,
+    pub(super) destination: PathBuf,
 }
 
 fn prepare_theme_pack(
@@ -581,7 +581,7 @@ fn run_seven_zip(seven_zip: &Path, arguments: &[OsString], source: &Path) -> io:
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ThemeInfo {
+pub(super) struct ThemeInfo {
     lines: [String; INFO_LINES],
 }
 
@@ -600,7 +600,7 @@ impl Default for ThemeInfo {
 }
 
 impl ThemeInfo {
-    fn set(&mut self, component: ThemeComponent, name: &str) {
+    pub(super) fn set(&mut self, component: ThemeComponent, name: &str) {
         let (index, label) = match component {
             ThemeComponent::IconPack => (0, "图标资源包："),
             ThemeComponent::SystemIconPack => (1, "系统图标资源包："),
@@ -611,9 +611,21 @@ impl ThemeInfo {
         };
         self.lines[index] = format!("{label}{name}");
     }
+
+    pub(super) fn clear(&mut self, component: ThemeComponent) {
+        let (index, label) = match component {
+            ThemeComponent::IconPack => (0, "图标资源包："),
+            ThemeComponent::SystemIconPack => (1, "系统图标资源包："),
+            ThemeComponent::LoadScreen => (2, "LoadScreen资源包："),
+            ThemeComponent::MouseStyle => (3, "鼠标样式资源包："),
+            ThemeComponent::StartIsBackConfig => (4, "开始菜单样式配置文件："),
+            ThemeComponent::Wallpaper => return,
+        };
+        self.lines[index] = format!("{label}Unknown");
+    }
 }
 
-fn read_info(path: &Path) -> io::Result<ThemeInfo> {
+pub(super) fn read_info(path: &Path) -> io::Result<ThemeInfo> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ThemeInfo::default()),
@@ -643,7 +655,7 @@ fn read_info(path: &Path) -> io::Result<ThemeInfo> {
     Ok(info)
 }
 
-fn write_info(path: &Path, info: &ThemeInfo) -> io::Result<()> {
+pub(super) fn write_info(path: &Path, info: &ThemeInfo) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -725,13 +737,13 @@ fn copy_file(source: &Path, destination: &Path) -> io::Result<()> {
     output.sync_all()
 }
 
-struct StagingDirectory {
-    path: PathBuf,
+pub(super) struct StagingDirectory {
+    pub(super) path: PathBuf,
     committed: bool,
 }
 
 impl StagingDirectory {
-    fn new(edgeless: &Path) -> io::Result<Self> {
+    pub(super) fn new(edgeless: &Path) -> io::Result<Self> {
         let path = edgeless.join(format!(".eli-theme-store-{}", unique_transaction_id()));
         fs::create_dir(&path)?;
         Ok(Self {
@@ -760,7 +772,7 @@ enum JournalRecord {
     Committed,
 }
 
-fn publish_plan(
+pub(super) fn publish_plan(
     edgeless: &Path,
     staging: &StagingDirectory,
     changes: &[PublishChange],
@@ -848,7 +860,7 @@ fn rollback(changes: &[(PathBuf, PathBuf, bool)]) -> io::Result<()> {
     }
 }
 
-fn recover_interrupted_transactions(edgeless: &Path) -> io::Result<()> {
+pub(super) fn recover_interrupted_transactions(edgeless: &Path) -> io::Result<()> {
     for entry in fs::read_dir(edgeless)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -985,7 +997,7 @@ fn is_allowed_recovery_backup(path: &Path) -> bool {
         })
 }
 
-fn ensure_destination(root: &Path, destination: &Path) -> io::Result<()> {
+pub(super) fn ensure_destination(root: &Path, destination: &Path) -> io::Result<()> {
     let relative = destination.strip_prefix(root).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1073,7 +1085,7 @@ fn remove_path(path: &Path) -> io::Result<()> {
     }
 }
 
-fn ensure_real_directory(path: &Path) -> io::Result<()> {
+pub(super) fn ensure_real_directory(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || is_reparse_point(&metadata) {
         return Err(io::Error::new(

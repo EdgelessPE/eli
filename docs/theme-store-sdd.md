@@ -1,4 +1,4 @@
-# `eli theme store` 设计说明
+# 启动盘主题资源管理设计说明
 
 ## 目标
 
@@ -35,3 +35,16 @@
 单元测试覆盖固定目标、GBK 五行元数据、旧版组件顺序、壁纸轮换、失败回滚和中断恢复。
 Windows、Linux、macOS 端到端脚本覆盖多启动盘歧义拒绝、显式目标存储和两个进程并发写壁纸。
 Edgeless PE 实机测试额外覆盖所有包类型、嵌套资源包校验和旧版 LoadScreen 解包目录。
+
+## 列出与删除
+
+`eli theme list` 只检查六个固定资源位置是否实际存在，输出 `Resource` 和 `Configured`
+两列。它不展示 `Info.txt` 中的包名，也不判断 LoadScreen 属于新旧规范。
+
+`eli theme delete <RESOURCE>` 接受 `icon/eis`、`system-icon/ess`、`loadscreen/els`、
+`mouse/ems`、`start-menu/esc`、`wallpaper/jpg` 和 `all`。删除非壁纸资源时，对应
+`Info.txt` 行会重置为 `Unknown`；删除壁纸只移除活动的 `wp.jpg`，保留
+`wp_backup.jpg`。单项资源不存在时返回 `NotFound`，`all` 没有找到资源时视为成功。
+
+列出操作也持有启动盘写锁以获得一致快照；删除复用 store 的事务日志、回滚和中断恢复机制。
+所有目标均由固定白名单映射，且不会跟随重解析点或符号链接。

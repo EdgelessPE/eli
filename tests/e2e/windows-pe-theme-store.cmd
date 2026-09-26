@@ -91,6 +91,32 @@ fc /b "%INPUT%\eth\WallPaper.jpg" "%EDGE%\wp_backup.jpg" >nul || exit /b 43
 fc /b "%INPUT%\First.jpg" "%EDGE%\wp.jpg" >nul || exit /b 46
 fc /b "%INPUT%\Seed.jpg" "%EDGE%\wp_backup.jpg" >nul || exit /b 47
 
-dir /b "%EDGE%\.eli-theme-store-*" >nul 2>nul && exit /b 48
+"%ELI%" --bootdisk "%BOOT%" theme list >"%ROOT%\list.txt" || exit /b 48
+findstr /r /c:"Resource       *Configured" "%ROOT%\list.txt" >nul || exit /b 66
+findstr /r /c:"Icon Pack      *No" "%ROOT%\list.txt" >nul || exit /b 67
+findstr /r /c:"System Icons   *No" "%ROOT%\list.txt" >nul || exit /b 68
+findstr /r /c:"Start Menu     *Yes" "%ROOT%\list.txt" >nul || exit /b 49
+findstr /r /c:"Wallpaper      *Yes" "%ROOT%\list.txt" >nul || exit /b 50
+findstr /r /c:"LoadScreen     *No" "%ROOT%\list.txt" >nul || exit /b 51
+findstr /r /c:"Mouse Style    *No" "%ROOT%\list.txt" >nul || exit /b 69
+findstr /i /r /c:"complete" /c:"partial" /c:"legacy" "%ROOT%\list.txt" >nul && exit /b 70
+"%ELI%" --bootdisk "%BOOT%" theme delete esc || exit /b 52
+if exist "%EDGE%\Default\StartIsBackConfig.esc" exit /b 53
+"%ELI%" --bootdisk "%BOOT%" theme delete jpg || exit /b 54
+if exist "%EDGE%\wp.jpg" exit /b 55
+if not exist "%EDGE%\wp_backup.jpg" exit /b 56
+
+"%ELI%" --bootdisk "%BOOT%" theme store "%INPUT%\Complete.eth" || exit /b 57
+"%ELI%" --bootdisk "%BOOT%" theme store "%INPUT%\Seed.jpg" || exit /b 71
+"%ELI%" --bootdisk "%BOOT%" theme delete all || exit /b 58
+if exist "%EDGE%\Default\IconPack.eis" exit /b 59
+if exist "%EDGE%\Default\SystemIconPack.ess" exit /b 60
+if exist "%EDGE%\Default\LoadScreen" exit /b 61
+if exist "%EDGE%\Default\MouseStyle.ems" exit /b 62
+if exist "%EDGE%\Default\StartIsBackConfig.esc" exit /b 63
+if exist "%EDGE%\wp.jpg" exit /b 64
+if not exist "%EDGE%\wp_backup.jpg" exit /b 65
+
+dir /b "%EDGE%\.eli-theme-store-*" >nul 2>nul && exit /b 66
 echo THEME_STORE_PE_E2E_PASS
 exit /b 0

@@ -473,6 +473,37 @@ else
     cmp "$mount_a/Edgeless/wp_backup.jpg" "$theme_wallpaper_a"
 fi
 
+"$eli" --bootdisk "$mount_a" theme list > "$stdout_path" 2> "$stderr_path"
+grep -Eq '^Resource +Configured$' "$stdout_path"
+grep -Eq '^Icon Pack +No$' "$stdout_path"
+grep -Eq '^System Icons +No$' "$stdout_path"
+grep -Eq '^LoadScreen +No$' "$stdout_path"
+grep -Eq '^Mouse Style +No$' "$stdout_path"
+grep -Eq '^Start Menu +Yes$' "$stdout_path"
+grep -Eq '^Wallpaper +Yes$' "$stdout_path"
+if grep -Eqi 'complete|partial|legacy' "$stdout_path"; then
+    echo 'Theme list exposed package completeness or legacy details.' >&2
+    exit 1
+fi
+if "$eli" theme delete start-menu > "$stdout_path" 2> "$stderr_path"; then
+    echo 'Theme deletion without an explicit disk unexpectedly succeeded.' >&2
+    exit 1
+fi
+grep -Fq -- '--bootdisk' "$stderr_path"
+[[ -f "$mount_a/Edgeless/Default/StartIsBackConfig.esc" ]]
+"$eli" --bootdisk "$mount_a" theme delete esc > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Default/StartIsBackConfig.esc" ]]
+"$eli" --bootdisk "$mount_a" theme delete jpg > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/wp.jpg" ]]
+[[ -f "$mount_a/Edgeless/wp_backup.jpg" ]]
+"$eli" --bootdisk "$mount_a" theme store "$theme_esc" > "$stdout_path" 2> "$stderr_path"
+"$eli" --bootdisk "$mount_a" theme store "$theme_wallpaper_a" > "$stdout_path" 2> "$stderr_path"
+"$eli" --bootdisk "$mount_a" theme store "$theme_wallpaper_b" > "$stdout_path" 2> "$stderr_path"
+"$eli" --bootdisk "$mount_a" theme delete all > "$stdout_path" 2> "$stderr_path"
+[[ ! -e "$mount_a/Edgeless/Default/StartIsBackConfig.esc" ]]
+[[ ! -e "$mount_a/Edgeless/wp.jpg" ]]
+[[ -f "$mount_a/Edgeless/wp_backup.jpg" ]]
+
 # ---------------------------------------------------------------------------
 # eli theme apply：非 WindowsPE 环境拒绝 + 输入校验（无副作用顺序）
 # ---------------------------------------------------------------------------
