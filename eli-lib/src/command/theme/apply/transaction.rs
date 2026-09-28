@@ -4,11 +4,16 @@
 // 文件快照与恢复、Windows 语义大小写折叠和“路径仍位于根目录内”校验。
 // 锁不落地为文件；主题提交互斥由 Windows named mutex 负责。
 
+#[cfg(any(windows, test))]
 use std::fs;
+#[cfg(any(windows, test))]
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(windows, test))]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(windows, test))]
 use super::ThemePaths;
 
 static TRANSACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -25,6 +30,7 @@ pub fn unique_transaction_id() -> String {
 }
 
 /// 生成碰撞概率可忽略的唯一光标目录/方案 ID；若目录已存在则内部重新生成。
+#[cfg(any(windows, test))]
 pub fn unique_cursor_id(paths: &ThemePaths) -> String {
     loop {
         let id = unique_transaction_id().replace("t-", "c-");
@@ -35,11 +41,13 @@ pub fn unique_cursor_id(paths: &ThemePaths) -> String {
 }
 
 /// staging 目录句柄；离开作用域时尽力清理。
+#[cfg(any(windows, test))]
 #[derive(Debug)]
 pub struct StagingDir {
     path: PathBuf,
 }
 
+#[cfg(any(windows, test))]
 impl StagingDir {
     pub fn create(paths: &ThemePaths) -> io::Result<Self> {
         ensure_existing_directory_not_reparse(&paths.staging_root)?;
@@ -58,6 +66,7 @@ impl StagingDir {
     }
 }
 
+#[cfg(any(windows, test))]
 impl Drop for StagingDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
@@ -65,6 +74,7 @@ impl Drop for StagingDir {
 }
 
 /// 把已就绪文件原子发布到目标位置（同卷临时文件 + 替换）。
+#[cfg(any(windows, test))]
 pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -128,6 +138,7 @@ pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 /// 把已就绪目录原子移动到尚不存在的目标位置。
+#[cfg(any(windows, test))]
 fn atomic_move_new(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -164,12 +175,14 @@ fn atomic_move_new(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 /// 已存在文件的内容快照（供当前进程内回滚）。
+#[cfg(any(windows, test))]
 #[derive(Debug)]
 pub struct FileSnapshot {
     path: PathBuf,
     contents: Option<Vec<u8>>,
 }
 
+#[cfg(any(windows, test))]
 impl FileSnapshot {
     pub fn capture(path: &Path) -> io::Result<Self> {
         let contents = match fs::read(path) {
@@ -204,12 +217,14 @@ impl FileSnapshot {
 }
 
 /// 把字节内容原子写入目标文件（临时文件 + 同卷 replace）。
+#[cfg(any(windows, test))]
 pub fn atomic_replace_bytes(path: &Path, contents: &[u8]) -> io::Result<()> {
     write_through(path, contents)
 }
 
 /// 把仅含普通文件的目录先完整复制到目标同级临时目录，再以一次 rename 发布。
 /// 目标必须不存在；失败时不会暴露半成品目录。
+#[cfg(any(windows, test))]
 pub fn publish_directory_atomically(source: &Path, destination: &Path) -> io::Result<()> {
     let parent = destination.parent().ok_or_else(|| {
         io::Error::new(
@@ -263,6 +278,7 @@ pub fn publish_directory_atomically(source: &Path, destination: &Path) -> io::Re
     result
 }
 
+#[cfg(any(windows, test))]
 fn write_through(path: &Path, contents: &[u8]) -> io::Result<()> {
     use std::io::Write;
     let parent = path.parent().ok_or_else(|| {
@@ -385,6 +401,7 @@ pub fn path_is_within(root: &Path, candidate: &Path) -> bool {
 ///
 /// 不存在的目录组件允许由调用方随后创建；已经存在的组件必须是普通目录，
 /// 目标本身若已存在则必须是普通文件或目录。
+#[cfg(any(windows, test))]
 pub fn ensure_safe_publish_path(root: &Path, destination: &Path) -> io::Result<()> {
     use std::path::Component;
 
@@ -447,6 +464,7 @@ pub fn ensure_safe_publish_path(root: &Path, destination: &Path) -> io::Result<(
 }
 
 /// 校验一个已存在的目录及其现有祖先都不是符号链接或 Windows 重解析点。
+#[cfg(any(windows, test))]
 pub fn ensure_existing_directory_not_reparse(directory: &Path) -> io::Result<()> {
     let mut ancestors = directory.ancestors().collect::<Vec<_>>();
     ancestors.reverse();
@@ -481,6 +499,7 @@ pub fn ensure_existing_directory_not_reparse(directory: &Path) -> io::Result<()>
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 #[cfg(windows)]
 fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
@@ -490,12 +509,14 @@ fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
+#[cfg(any(windows, test))]
 #[cfg(not(windows))]
 fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
 /// 以 Windows 忽略大小写的语义比较两个文件名是否相同。
+#[cfg(any(windows, test))]
 pub fn name_matches(left: &str, right: &str) -> bool {
     case_fold(left) == case_fold(right)
 }

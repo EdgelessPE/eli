@@ -583,6 +583,7 @@ pub(super) enum CommitMode {
     Startup,
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn commit_prepared(
     prepared: &PreparedTheme,
     backend: &dyn ThemeBackend,
